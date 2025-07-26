@@ -1,0 +1,61 @@
+{
+  "model_info": {
+    "name": "VNA Temperature Prediction",
+    "algorithm": "ExtraTreesRegressor",
+    "version": "1.0",
+    "created_date": "2025-01-20",
+    "model_size_mb": 25.0,
+    "features": 42,
+    "feature_engineering": "7 VNA measurements × 6 statistics",
+    "optimization": "Optuna hyperparameter optimization"
+  },
+  "performance_metrics": {
+    "test_r2": 0.983467899882071,
+    "test_mae": 0.39166881803070114,
+    "test_rmse": 0.7655916685897212,
+    "noise_ceiling": 0.8444357969718059,
+    "cv_best_r2": 0.9479875416058648,
+    "target_accuracy": "±0.5°C"
+  },
+  "preprocessing": {
+    "scaler": {
+      "type": "RobustScaler",
+      "file": "hold3_scaler.pkl"
+    },
+    "feature_selection": {
+      "type": "VarianceThreshold",
+      "file": "hold3_var_threshold.pkl"
+    }
+  },
+  "deployment": {
+    "target_hardware": "Raspberry Pi 5",
+    "runtime": "TensorFlow Lite Micro",
+    "inference_time_target": "≤50ms",
+    "quantization": "INT8",
+    "expected_size_after_quantization": "~6MB"
+  },
+  "vna_measurements": [
+    "Return Loss (dB)",
+    "Phase (degrees)", 
+    "Rs (ohms)",
+    "SWR (ratio)",
+    "Xs (ohms)",
+    "|Z| (impedance magnitude)",
+    "Theta (impedance phase)"
+  ],
+  "statistical_features": [
+    "Mean",
+    "Standard Deviation",
+    "Minimum",
+    "Maximum",
+    "25th Percentile", 
+    "75th Percentile"
+  ],
+  "data_splits": {
+    "total_samples": 5058,
+    "train": "55%",
+    "test": "20%", 
+    "validation": "15%",
+    "holdout": "10%"
+  }
+} 
