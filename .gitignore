@@ -18,10 +18,8 @@ data_splits/
 datasets/
 rodgers_data/
 Data/
-VNA Live Data/
 **/data/
 **/datasets/
-**/VNA Live Data/
 
 # Training Outputs and Results
 results/
