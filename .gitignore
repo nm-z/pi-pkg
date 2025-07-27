@@ -3,7 +3,6 @@
 # Exclude large files, datasets, and generated content
 
 # Large Model Files
-*.pkl
 *.h5
 *.model
 *.weights
