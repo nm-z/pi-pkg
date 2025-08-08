@@ -114,8 +114,7 @@ class LiveVnaInference:
             if detected:
                 console.print(f"Arduino port auto-detected: {detected}", style="cyan")
                 self.arduino_port = detected
-        if self.read_arduino:
-            self.start_arduino_reader()
+        # Do not start background reader; we'll use command-based reads
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -398,47 +397,46 @@ class LiveVnaInference:
             
             return prediction
 
-    def read_arduino_temp(self, max_wait_s: float = 2.0):
-        """Read temperature from Arduino (if enabled). Returns float or None."""
+    def read_arduino_temp(self, port: str | None = None, baud: int | None = None, timeout: float = 2.0):
+        """Send 'TEMP' to Arduino and read temperature response. Returns float or None."""
         if not self.read_arduino:
             return None
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
-        # If port missing, try auto-detect once per call
+        # Resolve port/baud
+        port = port or self.arduino_port
+        baud = int(baud or self.arduino_baud)
+        # Auto-detect if missing
         try:
-            if not os.path.exists(self.arduino_port):
+            if not os.path.exists(port):
                 detected = self.detect_arduino_port()
                 if detected:
                     console.print(f"Arduino port auto-detected: {detected}", style="cyan")
-                    self.arduino_port = detected
+                    port = detected
         except Exception:
             pass
         try:
-            with serial.Serial(self.arduino_port, self.arduino_baud, timeout=0.5) as ser:  # type: ignore
+            with serial.Serial(port, baud, timeout=timeout) as ser:  # type: ignore
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
-                import time as _t
-                end = _t.time() + max_wait_s
-                last_line = ""
-                while _t.time() < end:
-                    line = ser.readline().decode(errors='ignore').strip()
-                    if not line:
-                        continue
-                    last_line = line
-                    m = self.temp_regex.search(line)
-                    if m:
-                        try:
-                            val = float(m.group(1))
-                        except Exception:
-                            continue
-                        if -40.0 <= val <= 200.0:
-                            self.latest_arduino_temp = val
-                            return val
-                if last_line:
-                    console.print(f"Arduino read timeout; last line: {last_line}", style="yellow")
+                # Send TEMP command and read one line
+                ser.write(b"TEMP\n")
+                line = ser.readline().decode(errors='ignore').strip()
+                console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
+                if not line:
+                    return None
+                if line.upper() == "ERROR":
+                    return None
+                try:
+                    val = float(line)
+                    if -50.0 <= val <= 200.0:
+                        self.latest_arduino_temp = val
+                        return val
+                except ValueError:
+                    return None
         except Exception as e:
-            console.print(f"Arduino read error on {self.arduino_port}: {e}", style="yellow")
+            console.print(f"[red]Arduino read error: {e}[/red]")
         return None
 
     def start_arduino_reader(self):
