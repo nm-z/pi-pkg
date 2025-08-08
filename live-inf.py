@@ -459,11 +459,13 @@ class LiveVnaInference:
                 console.print(f"Failed to sanitize input array: {_e}", style="yellow")
 
             # Apply preprocessing pipeline (same as training)
-            # Apply variance threshold
-            x_var_threshold = self.var_threshold.transform(x_sample)
-            
-            # Apply KBest feature selection
-            x_kbest = self.kbest_selector.transform(x_var_threshold)
+            if self.using_inference_ready:
+                # No VT/KBest in inference-ready; features already shaped
+                x_kbest = x_sample
+            else:
+                # Apply variance threshold then KBest
+                x_var_threshold = self.var_threshold.transform(x_sample)
+                x_kbest = self.kbest_selector.transform(x_var_threshold)
             try:
                 _xk = np.asarray(x_kbest)
                 console.print(
@@ -662,11 +664,16 @@ class LiveVnaInference:
         return None
 
     def extract_vna_features(self, vna_df):
-        """Extract features from VNA data for hold5 model - Return Loss, Phase, Rs, and Xs."""
+        """Extract features from VNA data.
+        - Legacy: 4 channels (Return Loss, Phase, Xs, Rs) -> 40004 features
+        - Inference-ready: 3 channels (Return Loss, Phase, |Z|) -> 30003 features
+        """
         try:
-            # The model expects 4 measurement series resampled to self.model_points each
-            # so total raw features are constant (4 × self.model_points)
-            # Extract raw values from Return Loss(dB), Phase(deg), Rs, and Xs (NOT frequency)
+            # Determine target channels based on pipeline
+            # Inference-ready expects only scaler with n_features_in_ ~ 30003 (3 × 10001)
+            use_three_channels = bool(self.using_inference_ready)
+            num_channels = 3 if use_three_channels else 4
+            # Extract raw values from selected channels (NOT frequency)
             features = []
             target_len = self.model_points
 
@@ -725,39 +732,74 @@ class LiveVnaInference:
                 console.print("Missing Phase column", style="red")
                 return None
             
-            # Try different possible column names for Xs (Reactance) — ensure Xs precedes Rs to match training
-            xs_col = None
-            for col in vna_df.columns:
-                if col.lower() == 'xs' or 'reactance' in col.lower():
-                    xs_col = col
-                    break
-
-            if xs_col:
-                xs = vna_df[xs_col].values
-                xsr = resample_to_length(xs, target_len)
-                features.extend(xsr.tolist())
-                console.print(f"Added {len(xsr)} Xs (Reactance) features from column '{xs_col}' (resampled)", style="green")
+            if use_three_channels:
+                # Third channel preference: |Z| if present, else SWR, else sqrt(Rs^2 + Xs^2)
+                mag_col = None
+                for col in vna_df.columns:
+                    lc = col.lower()
+                    if '|z|' in lc or lc.strip() in ('|z|', 'mag', 'magnitude'):  # common name is '|Z|'
+                        mag_col = col
+                        break
+                if mag_col is None:
+                    for col in vna_df.columns:
+                        if col.lower() == 'swr':
+                            mag_col = col
+                            break
+                if mag_col is not None:
+                    arr = vna_df[mag_col].values
+                    mr = resample_to_length(arr, target_len)
+                    features.extend(mr.tolist())
+                    console.print(f"Added {len(mr)} third-channel features from column '{mag_col}' (resampled)", style="green")
+                else:
+                    # Fallback to sqrt(Rs^2 + Xs^2)
+                    rs_col, xs_col = None, None
+                    for col in vna_df.columns:
+                        if rs_col is None and (col.lower() == 'rs' or 'resistance' in col.lower()):
+                            rs_col = col
+                        if xs_col is None and (col.lower() == 'xs' or 'reactance' in col.lower()):
+                            xs_col = col
+                    if rs_col is None or xs_col is None:
+                        console.print("Missing both |Z|/SWR and Rs/Xs for fallback magnitude", style="red")
+                        return None
+                    rs = vna_df[rs_col].values.astype(float)
+                    xs = vna_df[xs_col].values.astype(float)
+                    mag = np.sqrt(np.square(rs) + np.square(xs))
+                    mr = resample_to_length(mag, target_len)
+                    features.extend(mr.tolist())
+                    console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
             else:
-                console.print("Missing Xs column", style="red")
-                return None
+                # Legacy: add Xs then Rs
+                xs_col = None
+                for col in vna_df.columns:
+                    if col.lower() == 'xs' or 'reactance' in col.lower():
+                        xs_col = col
+                        break
 
-            # Try different possible column names for Rs (Resistance)
-            rs_col = None
-            for col in vna_df.columns:
-                if col.lower() == 'rs' or 'resistance' in col.lower():
-                    rs_col = col
-                    break
+                if xs_col:
+                    xs = vna_df[xs_col].values
+                    xsr = resample_to_length(xs, target_len)
+                    features.extend(xsr.tolist())
+                    console.print(f"Added {len(xsr)} Xs (Reactance) features from column '{xs_col}' (resampled)", style="green")
+                else:
+                    console.print("Missing Xs column", style="red")
+                    return None
 
-            if rs_col:
-                rs = vna_df[rs_col].values
-                rsr = resample_to_length(rs, target_len)
-                features.extend(rsr.tolist())
-                console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
-            else:
-                console.print("Missing Rs column", style="red")
-                return None
+                rs_col = None
+                for col in vna_df.columns:
+                    if col.lower() == 'rs' or 'resistance' in col.lower():
+                        rs_col = col
+                        break
+
+                if rs_col:
+                    rs = vna_df[rs_col].values
+                    rsr = resample_to_length(rs, target_len)
+                    features.extend(rsr.tolist())
+                    console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
+                else:
+                    console.print("Missing Rs column", style="red")
+                    return None
             
-            console.print(f"Total features extracted: {len(features)}", style="green")
+            console.print(f"Total features extracted: {len(features)} (channels={num_channels}, points={target_len})", style="green")
             return features
             
         except Exception as e:
