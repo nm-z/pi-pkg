@@ -105,12 +105,17 @@ class LiveVnaInference:
         self.arduino_port = arduino_port
         self.arduino_baud = int(arduino_baud)
         self.temp_regex = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?C?", re.IGNORECASE)
+        self.latest_arduino_temp = None
+        self._arduino_thread = None
+        self._arduino_stop = threading.Event()
         # Auto-detect Arduino port by VID:PID if requested and default path missing
         if self.read_arduino and not os.path.exists(self.arduino_port):
             detected = self.detect_arduino_port()
             if detected:
                 console.print(f"Arduino port auto-detected: {detected}", style="cyan")
                 self.arduino_port = detected
+        if self.read_arduino:
+            self.start_arduino_reader()
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -428,12 +433,52 @@ class LiveVnaInference:
                         except Exception:
                             continue
                         if -40.0 <= val <= 200.0:
+                            self.latest_arduino_temp = val
                             return val
                 if last_line:
                     console.print(f"Arduino read timeout; last line: {last_line}", style="yellow")
         except Exception as e:
             console.print(f"Arduino read error on {self.arduino_port}: {e}", style="yellow")
         return None
+
+    def start_arduino_reader(self):
+        if serial is None:
+            return
+        if self._arduino_thread and self._arduino_thread.is_alive():
+            return
+        def _reader():
+            while not self._arduino_stop.is_set():
+                try:
+                    if not os.path.exists(self.arduino_port):
+                        detected = self.detect_arduino_port()
+                        if detected:
+                            self.arduino_port = detected
+                    with serial.Serial(self.arduino_port, self.arduino_baud, timeout=1.0) as ser:  # type: ignore
+                        ser.reset_input_buffer()
+                        ser.reset_output_buffer()
+                        line = ser.readline().decode(errors='ignore').strip()
+                        if not line:
+                            continue
+                        m = self.temp_regex.search(line)
+                        if m:
+                            try:
+                                val = float(m.group(1))
+                                if -40.0 <= val <= 200.0:
+                                    self.latest_arduino_temp = val
+                            except Exception:
+                                continue
+                except Exception:
+                    # Sleep briefly before retrying
+                    time.sleep(0.5)
+                    continue
+        self._arduino_stop.clear()
+        self._arduino_thread = threading.Thread(target=_reader, daemon=True)
+        self._arduino_thread.start()
+
+    def stop_arduino_reader(self):
+        self._arduino_stop.set()
+        if self._arduino_thread:
+            self._arduino_thread.join(timeout=1.0)
 
     def detect_arduino_port(self) -> str | None:
         """Detect Arduino Due Programming Port by USB VID:PID 2341:003d via sysfs.
@@ -736,6 +781,7 @@ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
             self.stop_vna_capture()
             observer.stop()
             observer.join()
+            self.stop_arduino_reader()
             self.live_monitoring = False
             console.print("Live monitoring stopped", style="green")
 
