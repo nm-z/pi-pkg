@@ -309,6 +309,19 @@ class LiveVnaInference:
             # Convert to numpy array and reshape for single sample
             x_sample = np.array(features).reshape(1, -1)
 
+            # Clean NaNs/Infs prior to sklearn transforms
+            try:
+                nan_count = int(np.isnan(x_sample).sum())
+                inf_count = int(np.isinf(x_sample).sum())
+                if nan_count or inf_count:
+                    console.print(
+                        f"Cleaning input: NaNs={nan_count}, Infs={inf_count}",
+                        style="yellow",
+                    )
+                x_sample = np.nan_to_num(x_sample, nan=0.0, posinf=0.0, neginf=0.0)
+            except Exception as _e:
+                console.print(f"Failed to sanitize input array: {_e}", style="yellow")
+
             # Apply preprocessing pipeline (same as training)
             # Apply variance threshold
             x_var_threshold = self.var_threshold.transform(x_sample)
