@@ -73,9 +73,9 @@ class VNADataHandler(FileSystemEventHandler):
 class LiveVnaInference:
     """Live VNA monitoring and temperature inference using hold5 model."""
 
-    def __init__(self, hw_points: int = 10001, read_arduino: bool = False, arduino_port: str = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00", arduino_baud: int = 115200):
-        # Use hold5 model directory
-        self.model_dir = Path("best_model_hold5")
+    def __init__(self, hw_points: int = 10001, read_arduino: bool = False, arduino_port: str = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00", arduino_baud: int = 115200, model_dir: str | Path | None = None):
+        # Use hold5 model directory (allow override via CLI)
+        self.model_dir = Path(model_dir) if model_dir else Path("best_model_hold5")
         
         # VNA Live Data monitoring
         self.vna_data_path = Path("vna-live")
@@ -790,6 +790,7 @@ def main():
     parser.add_argument("--read-arduino", action="store_true", default=True, help="Read Arduino temperature over serial for accuracy comparison (default: on)")
     parser.add_argument("--arduino-port", type=str, default="/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00", help="Arduino serial device path")
     parser.add_argument("--arduino-baud", type=int, default=115200, help="Arduino serial baud rate")
+    parser.add_argument("--model-dir", type=str, default=None, help="Directory containing hold5 artifacts (scaler, var_threshold, kbest, model)")
     args = parser.parse_args()
     
     inference_engine = LiveVnaInference(
@@ -797,6 +798,7 @@ def main():
         read_arduino=args.read_arduino,
         arduino_port=args.arduino_port,
         arduino_baud=args.arduino_baud,
+        model_dir=args.model_dir,
     )
     
     # Start live monitoring
