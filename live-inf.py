@@ -5,7 +5,7 @@ Live VNA Monitoring and Temperature Inference using hold5 model
 Real-time script for VNA data monitoring and temperature prediction.
 Uses Java VNAhl command to capture VNA data, then runs inference using hold5 model.
 
-VERSION: 1.0.7
+VERSION: 1.0.8
 """
 
 import argparse
@@ -20,6 +20,11 @@ import pandas as pd
 import joblib
 import torch
 from torch import nn
+import re
+try:
+    import serial
+except Exception:
+    serial = None
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
@@ -30,7 +35,7 @@ console = Console()
 
 # Print versions immediately when script starts
 console.print("[bold blue]=== VERSION INFO ===[/bold blue]")
-console.print(f"Script Version: 1.0.7")
+console.print(f"Script Version: 1.0.8")
 console.print(f"Python: {sys.version}")
 console.print(f"NumPy: {np.__version__}")
 console.print(f"Pandas: {pd.__version__}")
@@ -68,7 +73,7 @@ class VNADataHandler(FileSystemEventHandler):
 class LiveVnaInference:
     """Live VNA monitoring and temperature inference using hold5 model."""
 
-    def __init__(self, hw_points: int = 10001):
+    def __init__(self, hw_points: int = 10001, read_arduino: bool = False, arduino_port: str = "/dev/ttyACM0", arduino_baud: int = 115200):
         # Use hold5 model directory
         self.model_dir = Path("best_model_hold5")
         
@@ -95,6 +100,11 @@ class LiveVnaInference:
         # Model expects features built from 4 columns × 10,001 points
         self.model_points = 10001
         self.expected_raw_features = 4 * self.model_points
+        # Arduino config
+        self.read_arduino = bool(read_arduino)
+        self.arduino_port = arduino_port
+        self.arduino_baud = int(arduino_baud)
+        self.temp_regex = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?C?", re.IGNORECASE)
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -278,6 +288,39 @@ class LiveVnaInference:
             
             return prediction
 
+    def read_arduino_temp(self, max_wait_s: float = 2.0):
+        """Read temperature from Arduino (if enabled). Returns float or None."""
+        if not self.read_arduino:
+            return None
+        if serial is None:
+            console.print("pyserial not installed; skipping Arduino read", style="yellow")
+            return None
+        try:
+            with serial.Serial(self.arduino_port, self.arduino_baud, timeout=0.5) as ser:  # type: ignore
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+                import time as _t
+                end = _t.time() + max_wait_s
+                last_line = ""
+                while _t.time() < end:
+                    line = ser.readline().decode(errors='ignore').strip()
+                    if not line:
+                        continue
+                    last_line = line
+                    m = self.temp_regex.search(line)
+                    if m:
+                        try:
+                            val = float(m.group(1))
+                        except Exception:
+                            continue
+                        if -40.0 <= val <= 200.0:
+                            return val
+                if last_line:
+                    console.print(f"Arduino read timeout; last line: {last_line}", style="yellow")
+        except Exception as e:
+            console.print(f"Arduino read error on {self.arduino_port}: {e}", style="yellow")
+        return None
+
     def extract_vna_features(self, vna_df):
         """Extract features from VNA data for hold5 model - Return Loss, Phase, Rs, and Xs."""
         try:
@@ -417,11 +460,14 @@ class LiveVnaInference:
             # Run inference
             prediction = self.run_inference(features)
             
+            # Optionally read Arduino temperature
+            measured_temp = self.read_arduino_temp(max_wait_s=2.0)
+            
             # Display results
-            self.display_vna_results(file_path.name, prediction)
+            self.display_vna_results(file_path.name, prediction, measured_temp)
             
             # Save results
-            self.save_vna_result(file_path.name, prediction)
+            self.save_vna_result(file_path.name, prediction, measured_temp)
             
             # Update counters
             self.last_prediction = prediction
@@ -430,14 +476,19 @@ class LiveVnaInference:
         except Exception as e:
             console.print(f"Error processing VNA file: {e}", style="red")
 
-    def display_vna_results(self, filename, prediction):
+    def display_vna_results(self, filename, prediction, measured_temp=None):
         """Display inference results."""
         # Create results panel
+        extra = ""
+        if measured_temp is not None:
+            diff = prediction - measured_temp
+            extra = f"\nReference (Arduino): {measured_temp:.2f}°C\nError: {diff:+.2f}°C"
         results_text = f"""
 File: {filename}
 Temperature Prediction: {prediction:.2f}°C
 Model: Hold5 CustomResNet (2 residual blocks, 128 hidden dim)
 Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
+{extra}
         """
         
         panel = Panel(
@@ -447,12 +498,16 @@ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
         )
         console.print(panel)
 
-    def save_vna_result(self, filename, prediction):
+    def save_vna_result(self, filename, prediction, measured_temp=None):
         """Save inference results to file."""
         results_file = Path("vna_inference_results.txt")
         
         with open(results_file, "a") as f:
-            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {filename} | {prediction:.2f}°C\n")
+            if measured_temp is None:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {filename} | pred={prediction:.2f}°C\n")
+            else:
+                diff = prediction - measured_temp
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} | {filename} | pred={prediction:.2f}°C | ref={measured_temp:.2f}°C | err={diff:+.2f}°C\n")
         
         console.print(f"Results saved to {results_file}", style="green")
 
@@ -502,10 +557,18 @@ def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Live VNA Monitoring with Hold5 Model")
     parser.add_argument("--points", type=int, default=10001, help="Hardware sweep points passed to VNAhl (-Dfsteps). Inference will resample to model's expected length.")
+    parser.add_argument("--read-arduino", action="store_true", help="Read Arduino temperature over serial for accuracy comparison")
+    parser.add_argument("--arduino-port", type=str, default="/dev/ttyACM0", help="Arduino serial device path")
+    parser.add_argument("--arduino-baud", type=int, default=115200, help="Arduino serial baud rate")
     args = parser.parse_args()
     
     # Create inference engine
-    inference_engine = LiveVnaInference(hw_points=args.points)
+    inference_engine = LiveVnaInference(
+        hw_points=args.points,
+        read_arduino=args.read_arduino,
+        arduino_port=args.arduino_port,
+        arduino_baud=args.arduino_baud,
+    )
     
     # Start live monitoring
     inference_engine.start_live_monitoring()
