@@ -407,6 +407,15 @@ class LiveVnaInference:
         # Resolve port/baud
         port = port or self.arduino_port
         baud = int(baud or self.arduino_baud)
+        # Prefer by-id path if available (stable symlink)
+        try:
+            by_id = [p for p in os.listdir('/dev/serial/by-id') if 'Arduino' in p or 'arduino' in p]
+            if by_id:
+                cand = os.path.realpath(os.path.join('/dev/serial/by-id', by_id[0]))
+                if os.path.exists(cand):
+                    port = cand
+        except Exception:
+            pass
         # Auto-detect if missing
         try:
             if not os.path.exists(port):
@@ -417,24 +426,49 @@ class LiveVnaInference:
         except Exception:
             pass
         try:
-            with serial.Serial(port, baud, timeout=timeout) as ser:  # type: ignore
+            with serial.Serial(port, baud, timeout=0.5, write_timeout=0.5) as ser:  # type: ignore
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
-                # Send TEMP command and read one line
-                ser.write(b"TEMP\n")
-                line = ser.readline().decode(errors='ignore').strip()
-                console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
-                if not line:
-                    return None
-                if line.upper() == "ERROR":
-                    return None
+                # Some boards reset on open; give them a moment
+                time.sleep(0.6)
+                # Send TEMP command and search for numeric line within timeout window
+                deadline = time.time() + float(timeout)
                 try:
-                    val = float(line)
-                    if -50.0 <= val <= 200.0:
-                        self.latest_arduino_temp = val
-                        return val
-                except ValueError:
-                    return None
+                    ser.write(b"TEMP\n")
+                except Exception:
+                    pass
+                last_line = ""
+                while time.time() < deadline:
+                    line = ser.readline().decode(errors='ignore').strip()
+                    if not line:
+                        continue
+                    last_line = line
+                    console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
+                    if line.upper() == "ERROR":
+                        break
+                    try:
+                        val = float(line)
+                        if -50.0 <= val <= 200.0:
+                            self.latest_arduino_temp = val
+                            return val
+                    except ValueError:
+                        continue
+                # Fallback: read ambient streaming without command for a short window
+                fallback_deadline = time.time() + 1.5
+                while time.time() < fallback_deadline:
+                    line = ser.readline().decode(errors='ignore').strip()
+                    if not line:
+                        continue
+                    console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
+                    try:
+                        val = float(line)
+                        if -50.0 <= val <= 200.0:
+                            self.latest_arduino_temp = val
+                            return val
+                    except ValueError:
+                        continue
+                if last_line:
+                    console.print(f"Arduino read timeout; last: {last_line}", style="yellow")
         except Exception as e:
             console.print(f"[red]Arduino read error: {e}[/red]")
         return None
