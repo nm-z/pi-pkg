@@ -449,14 +449,35 @@ class LiveVnaInference:
                 console.print(f"Failed to sanitize input array: {_e}", style="yellow")
 
             # Apply preprocessing pipeline (same as training)
-            # Apply preprocessing in training order: VarianceThreshold -> StandardScaler -> SelectKBest
+            # Apply preprocessing in training order with shape-safety checks
             x_pre = x_sample
+            # VarianceThreshold
             if self.var_threshold is not None:
-                x_pre = self.var_threshold.transform(x_pre)
+                try:
+                    vt_in = getattr(self.var_threshold, 'n_features_in_', x_pre.shape[1])
+                    if int(vt_in) == int(x_pre.shape[1]):
+                        x_pre = self.var_threshold.transform(x_pre)
+                    else:
+                        console.print(f"Skipping VarianceThreshold: expects {vt_in} features but have {x_pre.shape[1]}", style="yellow")
+                except Exception as _e:
+                    console.print(f"VarianceThreshold transform failed ({_e}); skipping", style="yellow")
+            # Scaler
             if self.scaler is not None:
-                x_pre = self.scaler.transform(x_pre)
+                try:
+                    sc_in = getattr(self.scaler, 'n_features_in_', x_pre.shape[1])
+                    if int(sc_in) == int(x_pre.shape[1]):
+                        x_pre = self.scaler.transform(x_pre)
+                    else:
+                        console.print(f"Skipping Scaler: expects {sc_in} features but have {x_pre.shape[1]}", style="yellow")
+                except Exception as _e:
+                    console.print(f"Scaler transform failed ({_e}); skipping", style="yellow")
+            # KBest
             if self.kbest_selector is not None:
-                x_pre = self.kbest_selector.transform(x_pre)
+                try:
+                    x_pre = self.kbest_selector.transform(x_pre)
+                except Exception as _e:
+                    console.print(f"KBest transform failed ({_e}); proceeding without KBest", style="yellow")
+            # Final matrix post-preprocessing
             x_kbest = x_pre
             try:
                 _xk = np.asarray(x_kbest)
@@ -474,8 +495,8 @@ class LiveVnaInference:
             except Exception as _e:
                 console.print(f"Failed to compute x_kbest stats: {_e}", style="yellow")
             
-            # If scaler was already applied above, avoid double-transform
-            x_scaled = x_kbest if self.kbest_selector is not None or self.var_threshold is not None else self.scaler.transform(x_kbest)
+            # Scaler already applied above if present
+            x_scaled = x_kbest if self.scaler is not None else self.scaler.transform(x_kbest)
             try:
                 _xs = np.asarray(x_scaled)
                 console.print(
