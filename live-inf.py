@@ -684,7 +684,7 @@ class LiveVnaInference:
             prediction = self.run_inference(features)
             
             # Optionally read Arduino temperature
-            measured_temp = self.read_arduino_temp(max_wait_s=5.0)
+            measured_temp = self.read_arduino_temp(timeout=5.0)
             
             # Display results
             self.display_vna_results(file_path.name, prediction, measured_temp)
@@ -703,6 +703,9 @@ class LiveVnaInference:
         """Display inference results."""
         # Create results panel
         extra = ""
+        # Fallback to latest observed Arduino temp if explicit read returned None
+        if measured_temp is None and getattr(self, 'latest_arduino_temp', None) is not None:
+            measured_temp = float(self.latest_arduino_temp)
         if measured_temp is not None:
             diff = prediction - measured_temp
             abs_err = abs(diff)
