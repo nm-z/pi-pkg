@@ -449,13 +449,15 @@ class LiveVnaInference:
                 console.print(f"Failed to sanitize input array: {_e}", style="yellow")
 
             # Apply preprocessing pipeline (same as training)
-            if self.using_inference_ready:
-                # No VT/KBest in inference-ready; features already shaped
-                x_kbest = x_sample
-            else:
-                # Apply variance threshold then KBest
-                x_var_threshold = self.var_threshold.transform(x_sample)
-                x_kbest = self.kbest_selector.transform(x_var_threshold)
+            # Apply preprocessing in training order: VarianceThreshold -> StandardScaler -> SelectKBest
+            x_pre = x_sample
+            if self.var_threshold is not None:
+                x_pre = self.var_threshold.transform(x_pre)
+            if self.scaler is not None:
+                x_pre = self.scaler.transform(x_pre)
+            if self.kbest_selector is not None:
+                x_pre = self.kbest_selector.transform(x_pre)
+            x_kbest = x_pre
             try:
                 _xk = np.asarray(x_kbest)
                 console.print(
@@ -472,8 +474,8 @@ class LiveVnaInference:
             except Exception as _e:
                 console.print(f"Failed to compute x_kbest stats: {_e}", style="yellow")
             
-            # Apply scaler
-            x_scaled = self.scaler.transform(x_kbest)
+            # If scaler was already applied above, avoid double-transform
+            x_scaled = x_kbest if self.kbest_selector is not None or self.var_threshold is not None else self.scaler.transform(x_kbest)
             try:
                 _xs = np.asarray(x_scaled)
                 console.print(
