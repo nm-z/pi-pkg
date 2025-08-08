@@ -355,10 +355,22 @@ class LiveVnaInference:
             # Show all available columns for debugging
             console.print(f"Available columns: {list(vna_df.columns)}", style="cyan")
             
-            # Try different possible column names for Return Loss
+            # Try different possible column names for Return Loss (support: s11_db, db, etc.)
             return_loss_col = None
+            preferred_aliases = {
+                's11_db', 's11db', 'returnloss', 'return_loss', 'returnlosdb', 'returnlossdb', 'db'
+            }
             for col in vna_df.columns:
-                if 'return' in col.lower() or 'loss' in col.lower() or 's11' in col.lower():
+                lower_col = col.lower()
+                normalized = re.sub(r"[^a-z0-9]+", "", lower_col)
+                if (
+                    'return' in lower_col or
+                    'loss' in lower_col or
+                    's11' in lower_col or
+                    normalized in preferred_aliases or
+                    lower_col == 'db' or
+                    lower_col.endswith('(db)')
+                ):
                     return_loss_col = col
                     break
             
