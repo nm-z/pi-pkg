@@ -105,7 +105,7 @@ class LiveVnaInference:
         self.arduino_port = arduino_port
         self.arduino_baud = int(arduino_baud)
         self.temp_regex = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?C?", re.IGNORECASE)
-        # Auto-detect Arduino port if requested and default path missing
+        # Auto-detect Arduino port by VID:PID if requested and default path missing
         if self.read_arduino and not os.path.exists(self.arduino_port):
             detected = self.detect_arduino_port()
             if detected:
@@ -436,21 +436,58 @@ class LiveVnaInference:
         return None
 
     def detect_arduino_port(self) -> str | None:
-        """Try to find an Arduino-like serial device. Prefer /dev/ttyACM*, avoid VNA /dev/ttyUSB0."""
+        """Detect Arduino Due Programming Port by USB VID:PID 2341:003d via sysfs.
+        Falls back to /dev/serial/by-id symlinks; avoids selecting VNA ttyUSB0.
+        """
         try:
-            candidates = []
-            # Prefer ACM devices typically used by Arduino
-            for base in ("/dev/ttyACM", "/dev/ttyUSB"):
-                for idx in range(0, 6):
-                    path = f"{base}{idx}"
-                    if os.path.exists(path):
-                        # Skip the VNA serial if known
-                        if path.endswith("ttyUSB0"):
+            target_vid = "2341"  # Arduino SA
+            target_pid = "003d"  # Due Programming Port
+
+            def match_sysfs(dev_path: str) -> bool:
+                name = os.path.basename(dev_path)
+                sys_dev = f"/sys/class/tty/{name}/device"
+                if not os.path.exists(sys_dev):
+                    return False
+                # ascend up to 5 levels to find idVendor/idProduct
+                cur = os.path.realpath(sys_dev)
+                for _ in range(6):
+                    vid_path = os.path.join(cur, "idVendor")
+                    pid_path = os.path.join(cur, "idProduct")
+                    if os.path.exists(vid_path) and os.path.exists(pid_path):
+                        try:
+                            with open(vid_path, 'r', encoding='utf-8') as f:
+                                vid = f.read().strip().lower()
+                            with open(pid_path, 'r', encoding='utf-8') as f:
+                                pid = f.read().strip().lower()
+                            return (vid == target_vid and pid == target_pid)
+                        except Exception:
+                            return False
+                    cur = os.path.dirname(cur)
+                return False
+
+            # Prefer ACM devices first
+            for glob_base in ("/dev/ttyACM", "/dev/ttyUSB"):
+                for idx in range(0, 8):
+                    dev = f"{glob_base}{idx}"
+                    if os.path.exists(dev) and match_sysfs(dev):
+                        return dev
+
+            # Fallback to by-id symlinks
+            by_id_dir = "/dev/serial/by-id"
+            if os.path.isdir(by_id_dir):
+                for entry in os.listdir(by_id_dir):
+                    lower = entry.lower()
+                    if "arduino" in lower and ("due" in lower or "prog" in lower):
+                        link = os.path.join(by_id_dir, entry)
+                        try:
+                            resolved = os.path.realpath(link)
+                            if os.path.exists(resolved):
+                                return resolved
+                        except Exception:
                             continue
-                        candidates.append(path)
-            return candidates[0] if candidates else None
         except Exception:
-            return None
+            pass
+        return None
 
     def extract_vna_features(self, vna_df):
         """Extract features from VNA data for hold5 model - Return Loss, Phase, Rs, and Xs."""
@@ -604,7 +641,7 @@ class LiveVnaInference:
             prediction = self.run_inference(features)
             
             # Optionally read Arduino temperature
-            measured_temp = self.read_arduino_temp(max_wait_s=3.0)
+            measured_temp = self.read_arduino_temp(max_wait_s=5.0)
             
             # Display results
             self.display_vna_results(file_path.name, prediction, measured_temp)
