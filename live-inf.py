@@ -73,7 +73,7 @@ class VNADataHandler(FileSystemEventHandler):
 class LiveVnaInference:
     """Live VNA monitoring and temperature inference using hold5 model."""
 
-    def __init__(self, hw_points: int = 10001, read_arduino: bool = False, arduino_port: str = "/dev/ttyACM0", arduino_baud: int = 115200):
+    def __init__(self, hw_points: int = 10001, read_arduino: bool = False, arduino_port: str = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00", arduino_baud: int = 115200):
         # Use hold5 model directory
         self.model_dir = Path("best_model_hold5")
         
@@ -108,13 +108,7 @@ class LiveVnaInference:
         self.latest_arduino_temp = None
         self._arduino_thread = None
         self._arduino_stop = threading.Event()
-        # Auto-detect Arduino port by VID:PID if requested and default path missing
-        if self.read_arduino and not os.path.exists(self.arduino_port):
-            detected = self.detect_arduino_port()
-            if detected:
-                console.print(f"Arduino port auto-detected: {detected}", style="cyan")
-                self.arduino_port = detected
-        # Do not start background reader; we'll use command-based reads
+        # Do not auto-detect or fallback; use fixed by-id port when reading on demand
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -398,84 +392,38 @@ class LiveVnaInference:
             return prediction
 
     def read_arduino_temp(self, port: str | None = None, baud: int | None = None, timeout: float = 2.0):
-        """Send 'TEMP' to Arduino and read temperature response. Returns float or None."""
+        """Send 'TEMP' to Arduino and read a single line response. Exact behavior per working script; no fallbacks."""
         if not self.read_arduino:
             return None
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
-        # Resolve port/baud
-        port = port or self.arduino_port
-        baud = int(baud or self.arduino_baud)
-        # Prefer by-id path if available (stable symlink)
+        fixed_port = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00"
+        fixed_baud = 115200
         try:
-            by_id = [p for p in os.listdir('/dev/serial/by-id') if 'Arduino' in p or 'arduino' in p]
-            if by_id:
-                cand = os.path.realpath(os.path.join('/dev/serial/by-id', by_id[0]))
-                if os.path.exists(cand):
-                    port = cand
-        except Exception:
-            pass
-        # Auto-detect if missing
-        try:
-            if not os.path.exists(port):
-                detected = self.detect_arduino_port()
-                if detected:
-                    console.print(f"Arduino port auto-detected: {detected}", style="cyan")
-                    port = detected
-        except Exception:
-            pass
-        try:
-            with serial.Serial(port, baud, timeout=0.5, write_timeout=0.5) as ser:  # type: ignore
-                ser.reset_input_buffer()
-                ser.reset_output_buffer()
-                # Some boards reset on open; give them a moment
-                time.sleep(0.6)
-                # Send TEMP command and search for numeric line within timeout window
-                deadline = time.time() + float(timeout)
+            ser = serial.Serial(fixed_port, fixed_baud, timeout=1)  # type: ignore
+            try:
+                ser.setDTR(False)
+            except Exception:
+                pass
+            time.sleep(3)
+            ser.write(b"TEMP\r\n")
+            line = ser.readline().decode('utf-8', 'ignore').strip()
+            if line:
+                console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
                 try:
-                    ser.write(b"TEMP\n")
-                except Exception:
-                    pass
-                last_line = ""
-                while time.time() < deadline:
-                    line = ser.readline().decode(errors='ignore').strip()
-                    if not line:
-                        continue
-                    last_line = line
-                    console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
-                    if line.upper() == "ERROR":
-                        break
-                    try:
-                        val = float(line)
-                        if -50.0 <= val <= 200.0:
-                            # Convert Fahrenheit to Celsius if it looks like °F (e.g., > 60)
-                            c_val = (val - 32.0) * (5.0 / 9.0) if val > 60.0 else val
-                            self.latest_arduino_temp = c_val
-                            if val != c_val:
-                                console.print(f"[cyan]Arduino converted: {val}F -> {c_val:.2f}C[/cyan]")
-                            return c_val
-                    except ValueError:
-                        continue
-                # Fallback: read ambient streaming without command for a short window
-                fallback_deadline = time.time() + 1.5
-                while time.time() < fallback_deadline:
-                    line = ser.readline().decode(errors='ignore').strip()
-                    if not line:
-                        continue
-                    console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
-                    try:
-                        val = float(line)
-                        if -50.0 <= val <= 200.0:
-                            self.latest_arduino_temp = val
-                            return val
-                    except ValueError:
-                        continue
-                if last_line:
-                    console.print(f"Arduino read timeout; last: {last_line}", style="yellow")
+                    val = float(line)
+                    self.latest_arduino_temp = val
+                    return val
+                except ValueError:
+                    return None
+            return None
+        except serial.SerialException as e:  # type: ignore
+            console.print(f"[red]Arduino read error: {e}[/red]")
+            return None
         except Exception as e:
             console.print(f"[red]Arduino read error: {e}[/red]")
-        return None
+            return None
 
     def start_arduino_reader(self):
         if serial is None:
@@ -828,25 +776,14 @@ def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Live VNA Monitoring with Hold5 Model")
     parser.add_argument("--points", type=int, default=10001, help="Hardware sweep points passed to VNAhl (-Dfsteps). Inference will resample to model's expected length.")
-    parser.add_argument("--read-arduino", action="store_true", help="Read Arduino temperature over serial for accuracy comparison")
-    parser.add_argument("--arduino-port", type=str, default="/dev/ttyACM0", help="Arduino serial device path")
+    parser.add_argument("--read-arduino", action="store_true", default=True, help="Read Arduino temperature over serial for accuracy comparison (default: on)")
+    parser.add_argument("--arduino-port", type=str, default="/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00", help="Arduino serial device path")
     parser.add_argument("--arduino-baud", type=int, default=115200, help="Arduino serial baud rate")
     args = parser.parse_args()
     
-    # Create inference engine
-    # Auto-enable Arduino reading if device is present, unless explicitly requested otherwise
-    auto_read_arduino = args.read_arduino
-    try:
-        if not auto_read_arduino:
-            import os as _os
-            if serial is not None and _os.path.exists(args.arduino_port):
-                auto_read_arduino = True
-    except Exception:
-        pass
-
     inference_engine = LiveVnaInference(
         hw_points=args.points,
-        read_arduino=auto_read_arduino,
+        read_arduino=args.read_arduino,
         arduino_port=args.arduino_port,
         arduino_baud=args.arduino_baud,
     )
