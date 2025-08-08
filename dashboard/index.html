@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Raspberry Pi 5 Temperature Monitor</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🌡️ Raspberry Pi 5 Temperature Monitor</h1>
+                <p class="subtitle">Real-time TinyML Temperature Prediction Dashboard</p>
+                <div class="status-indicators">
+                    <div class="status-item" id="service-status">
+                        <span class="status-dot offline"></span>
+                        <span>Service</span>
+                    </div>
+                    <div class="status-item" id="weaviate-status">
+                        <span class="status-dot offline"></span>
+                        <span>Database</span>
+                    </div>
+                    <div class="status-item" id="model-status">
+                        <span class="status-dot offline"></span>
+                        <span>ML Model</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Current Reading Panel -->
+            <section class="current-reading">
+                <div class="reading-card">
+                    <h2>Current Temperature</h2>
+                    <div class="temperature-display">
+                        <span class="temperature-value" id="current-temp">--</span>
+                        <span class="temperature-unit">°C</span>
+                    </div>
+                    <div class="reading-metadata">
+                        <div class="metadata-item">
+                            <span class="metadata-label">Confidence:</span>
+                            <span class="metadata-value" id="confidence">--</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Inference Time:</span>
+                            <span class="metadata-value" id="inference-time">--</span>
+                        </div>
+                        <div class="metadata-item">
+                            <span class="metadata-label">Last Updated:</span>
+                            <span class="metadata-value" id="last-updated">--</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Charts Section -->
+            <section class="charts-section">
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <h3>Temperature Trend (Last 30 Minutes)</h3>
+                        <div class="chart-controls">
+                            <select id="time-range">
+                                <option value="30">30 Minutes</option>
+                                <option value="60">1 Hour</option>
+                                <option value="180">3 Hours</option>
+                                <option value="720">12 Hours</option>
+                            </select>
+                            <button id="export-data" class="btn-secondary">Export Data</button>
+                        </div>
+                    </div>
+                    <canvas id="temperature-chart"></canvas>
+                </div>
+
+                <div class="chart-container">
+                    <div class="chart-header">
+                        <h3>Inference Performance</h3>
+                    </div>
+                    <canvas id="performance-chart"></canvas>
+                </div>
+            </section>
+
+            <!-- System Information -->
+            <section class="system-info">
+                <div class="info-grid">
+                    <div class="info-card">
+                        <h4>Model Information</h4>
+                        <div class="info-content">
+                            <div class="info-row">
+                                <span>Algorithm:</span>
+                                <span id="model-algorithm">ExtraTreesRegressor</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Features:</span>
+                                <span id="model-features">42</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Trained R²:</span>
+                                <span id="model-r2">0.983</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Target Accuracy:</span>
+                                <span>±0.5°C</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-card">
+                        <h4>System Performance</h4>
+                        <div class="info-content">
+                            <div class="info-row">
+                                <span>Avg Inference:</span>
+                                <span id="avg-inference">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Readings/sec:</span>
+                                <span id="throughput">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Memory Usage:</span>
+                                <span id="memory-usage">--</span>
+                            </div>
+                            <div class="info-row">
+                                <span>CPU Usage:</span>
+                                <span id="cpu-usage">--</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="info-card">
+                        <h4>Hardware Info</h4>
+                        <div class="info-content">
+                            <div class="info-row">
+                                <span>Platform:</span>
+                                <span>Raspberry Pi 5</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Architecture:</span>
+                                <span>ARM64 Cortex-A76</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Runtime:</span>
+                                <span>TensorFlow Lite</span>
+                            </div>
+                            <div class="info-row">
+                                <span>Service Version:</span>
+                                <span>v1.0.0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Recent History -->
+            <section class="history-section">
+                <div class="history-container">
+                    <div class="history-header">
+                        <h3>Recent Readings</h3>
+                        <button id="refresh-history" class="btn-primary">Refresh</button>
+                    </div>
+                    <div class="history-table-container">
+                        <table id="history-table">
+                            <thead>
+                                <tr>
+                                    <th>Timestamp</th>
+                                    <th>Temperature</th>
+                                    <th>Confidence</th>
+                                    <th>Inference Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-tbody">
+                                <!-- History data will be populated here -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <div class="footer-content">
+                <p>&copy; 2025 Raspberry Pi 5 Temperature Service | TinyML Edge Deployment</p>
+                <div class="footer-links">
+                    <a href="/metrics" target="_blank">API Metrics</a>
+                    <a href="/health" target="_blank">Health Check</a>
+                    <a href="http://localhost:8080/v1/meta" target="_blank">Database</a>
+                </div>
+            </div>
+        </footer>
+    </div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+        <div class="loading-spinner"></div>
+        <p>Loading dashboard...</p>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal" id="error-modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h4>Connection Error</h4>
+                <span class="modal-close" id="modal-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="error-message">Unable to connect to temperature service.</p>
+                <p>Please check that the service is running and try again.</p>
+            </div>
+            <div class="modal-footer">
+                <button id="retry-connection" class="btn-primary">Retry Connection</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="dashboard.js"></script>
+</body>
+</html> 

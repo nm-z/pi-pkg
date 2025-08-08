@@ -1,0 +1,205 @@
+# PI_PKG .gitignore
+# ==================
+# Exclude large files, datasets, and generated content
+
+# Large Model Files
+*.h5
+*.model
+*.weights
+*.tflite
+*.pb
+*.onnx
+embedded_model.json
+*.safetensors
+
+# Large Datasets and Data Directories
+data/
+data_splits/
+datasets/
+rodgers_data/
+Data/
+**/data/
+**/datasets/
+
+# Training Outputs and Results
+results/
+outputs/
+logs/
+checkpoints/
+experiments/
+runs/
+wandb/
+mlruns/
+
+# Python Virtual Environments
+venv/
+env/
+.env
+.venv
+ENV/
+env.bak/
+venv.bak/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebooks
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Log Files
+*.log
+logs/
+*.out
+*.err
+
+# Temporary Files
+*.tmp
+*.temp
+*.bak
+*.backup
+*.cache
+.cache/
+
+# System Files
+.pid
+*.pid
+*.lock
+
+# Docker
+.dockerignore
+Dockerfile.prod
+
+# Environment Variables
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Package Files
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+*.rar
+
+# C++ Build Files
+build/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+*.exe
+
+# Node.js (if any web components)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Large CSV Files (keep small examples, exclude large datasets)
+**/large_data*.csv
+**/training_data*.csv
+**/dataset*.csv
+# But allow small config/example CSV files
+!**/example*.csv
+!**/config*.csv
+!**/schema*.csv
+
+# Generated Documentation
+docs/_build/
+site/
+
+# Test Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Specific to this project
+ORGANIZATION_COMPLETE.md
+RODGERS_CODE_ORGANIZED.md
+DEPLOYMENT_SUMMARY.md
+
+# Keep small model metadata but exclude large models
+!model_metadata.json
+!**/config.h
+!**/CMakeLists.txt
+
+# Keep documentation and README files
+!README.md
+!**/README.md
+!**/INSTALL.md
+!**/API.md
+!**/ARCHITECTURE.md
+!**/TROUBLESHOOTING.md
+
+# Keep scripts and source code
+!scripts/
+!firmware/
+!api/
+!dashboard/
+!build_system/
+!model_conversion/
+!weaviate/
+!logging/
+!docs/
+
+# But exclude any generated binaries in those directories
+scripts/*.bin
+firmware/**/*.bin
+firmware/**/*.o
+api/**/*.bin 

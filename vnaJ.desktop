@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=vna/J 3.3.3 (MiniVNA Tiny)
+Comment=Vector-Network-Analyser control (OpenJDK 8)
+Exec=bash -c 'echo Running VNA...; env _JAVA_AWT_WM_NONREPARENTING=1 java -jar /home/nate/Downloads/vnaJ.3.4.8.jar; echo Press ENTER to close...; read'
+Icon=vnaJ
+Categories=Science;Electronics;Java;
+StartupNotify=true
+StartupWMClass=vnaJ
+Terminal=true
+Type=Application

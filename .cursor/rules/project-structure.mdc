@@ -1,0 +1,63 @@
+---
+alwaysApply: true
+---
+You must never deviate from this project structure under any circumstances:
+
+PI_PKG/
+├── README.md                    # Main readme
+├── models/                      # Trained model artifacts
+│   ├── hold3_final_model.pkl    # ExtraTreesRegressor model (25MB)
+│   ├── hold3_scaler.pkl         # RobustScaler preprocessing
+│   ├── hold3_var_threshold.pkl  # VarianceThreshold feature selection
+│   └── model_metadata.json     # Model performance metrics
+├── build_system/                # Firmware build tools
+│   ├── setup_toolchain.sh      # Install dependencies and toolchain
+│   ├── build_firmware.sh       # Build the temperature service
+│   ├── Dockerfile              # Optional containerized build
+│   └── cross_compile.cmake     # CMake cross-compilation settings
+├── model_conversion/            # TensorFlow Lite conversion
+│   ├── sklearn_to_tflite.py    # Model conversion script
+│   ├── test_model_parity.py    # Validation script (±0.5°C accuracy)
+│   ├── quantize_model.py       # INT8 quantization
+│   └── model.tflm.cc           # Generated TFLite-Micro C++ code
+├── firmware/                    # C++ temperature service
+│   ├── src/
+│   │   ├── main.cpp            # Main service entry point
+│   │   ├── tempsvc.cpp         # Core temperature service
+│   │   ├── vna_sensor.cpp      # VNA sensor interface
+│   │   ├── feature_extractor.cpp # Feature engineering
+│   │   ├── tflite_inference.cpp # TFLite model inference
+│   │   └── json_output.cpp     # JSON response formatting
+│   ├── include/                # Header files
+│   ├── CMakeLists.txt          # Build configuration
+│   └── config.h               # Service configuration
+├── api/                        # REST API service
+│   ├── rest_server.cpp         # HTTP server implementation
+│   ├── endpoints.cpp           # API endpoint handlers
+│   └── api_config.json        # API configuration
+├── logging/                    # Logging system
+│   ├── logger.cpp             # Rotating log implementation
+│   ├── log_config.json        # Logging configuration
+│   └── logrotate.conf         # System log rotation
+├── weaviate/                   # Vector database integration
+│   ├── docker-compose.yml     # Weaviate container setup
+│   ├── ingest_service.py      # Data ingestion script
+│   ├── weaviate_config.json   # Database configuration
+│   └── schema.json            # Data schema definition
+├── dashboard/                  # Web dashboard
+│   ├── index.html             # Main dashboard page
+│   ├── dashboard.js           # Frontend JavaScript
+│   ├── styles.css             # Dashboard styling
+│   └── server.py              # Simple Python web server
+├── scripts/                    # Deployment and utility scripts
+│   ├── install.sh             # Full system installation
+│   ├── flash_firmware.sh      # Deploy to Pi 5
+│   ├── test_system.sh         # System integration tests
+│   └── demo.sh                # Quick demo script
+└── docs/                      # Documentation
+    ├── INSTALL.md             # Installation guide
+    ├── API.md                 # API documentation
+    ├── TROUBLESHOOTING.md     # Common issues and solutions
+    └── ARCHITECTURE.md        # System architecture overview
+
+---

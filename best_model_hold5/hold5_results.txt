@@ -1,0 +1,7 @@
+test_r2: 0.961742403338808
+test_mae: 0.5171346727844395
+test_mse: 0.419017230187966
+best_params: {'nn_model_type': 'resnet_custom', 'resnet_hidden_dim': 128, 'resnet_num_blocks': 2, 'resnet_dropout': 0.010716112128622697, 'resnet_lr': 0.0018485701213890255}
+model_type: neural_network
+dataset_num: 5
+noise_ceiling: 0.99
