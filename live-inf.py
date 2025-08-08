@@ -753,7 +753,33 @@ class LiveVnaInference:
                 console.print("Missing Phase column", style="red")
                 return None
             
-            if use_three_channels:
+            # Determine expected channels from scaler
+            channels_expected = 3 if use_three_channels else 4
+            if channels_expected == 4:
+                # Inference-ready 4-channel training order: [s11_db, db, phase, Xs]
+                # db is a duplicate of s11_db when separate column isn't available
+                # Xs required
+                xs_col = None
+                for col in vna_df.columns:
+                    if col.lower() == 'xs' or 'reactance' in col.lower():
+                        xs_col = col
+                        break
+                if xs_col is None:
+                    console.print("Missing Xs column for 4-channel pipeline", style="red")
+                    return None
+                # Assemble in training order
+                s11 = vna_df[return_loss_col].values
+                s11r = resample_to_length(s11, target_len)
+                features.extend(s11r.tolist())           # s11_db
+                features.extend(s11r.tolist())           # db (duplicate of s11_db)
+                ph = vna_df[phase_col].values
+                phr = resample_to_length(ph, target_len)
+                features.extend(phr.tolist())            # phase
+                xs = vna_df[xs_col].values
+                xsr = resample_to_length(xs, target_len)
+                features.extend(xsr.tolist())            # Xs
+                console.print("Assembled 4-channel features in order: s11_db, db(dup), phase, Xs", style="green")
+            elif channels_expected == 3:
                 # Third channel preference: |Z| if present, else SWR, else sqrt(Rs^2 + Xs^2)
                 mag_col = None
                 for col in vna_df.columns:
@@ -789,36 +815,27 @@ class LiveVnaInference:
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
             else:
-                # Legacy: add Xs then Rs
+                # Legacy 4-channel pipeline: Return Loss, Phase, Xs, Rs
                 xs_col = None
                 for col in vna_df.columns:
                     if col.lower() == 'xs' or 'reactance' in col.lower():
                         xs_col = col
                         break
-
-                if xs_col:
-                    xs = vna_df[xs_col].values
-                    xsr = resample_to_length(xs, target_len)
-                    features.extend(xsr.tolist())
-                    console.print(f"Added {len(xsr)} Xs (Reactance) features from column '{xs_col}' (resampled)", style="green")
-                else:
-                    console.print("Missing Xs column", style="red")
-                    return None
-
                 rs_col = None
                 for col in vna_df.columns:
                     if col.lower() == 'rs' or 'resistance' in col.lower():
                         rs_col = col
                         break
-
-                if rs_col:
-                    rs = vna_df[rs_col].values
-                    rsr = resample_to_length(rs, target_len)
-                    features.extend(rsr.tolist())
-                    console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
-                else:
-                    console.print("Missing Rs column", style="red")
+                if xs_col is None or rs_col is None:
+                    console.print("Missing Xs or Rs column for legacy 4-channel pipeline", style="red")
                     return None
+                xs = vna_df[xs_col].values
+                xsr = resample_to_length(xs, target_len)
+                features.extend(xsr.tolist())
+                rs = vna_df[rs_col].values
+                rsr = resample_to_length(rs, target_len)
+                features.extend(rsr.tolist())
+                console.print("Assembled legacy 4-channel features: RL, phase, Xs, Rs", style="green")
             
             console.print(f"Total features extracted: {len(features)} (channels={num_channels}, points={target_len})", style="green")
             return features
