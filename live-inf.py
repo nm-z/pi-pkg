@@ -295,6 +295,22 @@ class LiveVnaInference:
             
             # Convert to PyTorch tensor
             x_tensor = torch.FloatTensor(x_scaled)
+
+            # Print tensor stats prior to model inference for debugging
+            try:
+                console.print(
+                    "x_tensor stats:",
+                    {
+                        "shape": tuple(x_tensor.shape),
+                        "min": float(x_tensor.min().item()),
+                        "max": float(x_tensor.max().item()),
+                        "mean": float(x_tensor.mean().item()),
+                        "std": float(x_tensor.std().item()),
+                    },
+                    style="cyan",
+                )
+            except Exception as _e:
+                console.print(f"Failed to compute x_tensor stats: {_e}", style="yellow")
             
             # Run prediction with PyTorch model
             with torch.no_grad():
