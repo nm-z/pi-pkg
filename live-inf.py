@@ -5,7 +5,7 @@ Live VNA Monitoring and Temperature Inference using hold5 model
 Real-time script for VNA data monitoring and temperature prediction.
 Uses Java VNAhl command to capture VNA data, then runs inference using hold5 model.
 
-VERSION: 1.0.8
+VERSION: 1.0.9
 """
 
 import argparse
@@ -35,7 +35,7 @@ console = Console()
 
 # Print versions immediately when script starts
 console.print("[bold blue]=== VERSION INFO ===[/bold blue]")
-console.print(f"Script Version: 1.0.8")
+console.print(f"Script Version: 1.0.9")
 console.print(f"Python: {sys.version}")
 console.print(f"NumPy: {np.__version__}")
 console.print(f"Pandas: {pd.__version__}")
@@ -149,50 +149,64 @@ class LiveVnaInference:
                             x = block(x)
                         return self.output(x).squeeze(-1)
                 
-                # Determine final feature count after preprocessing pipeline so
-                # the PyTorch model input dimension matches the checkpoint
-                # (avoids size-mismatch errors)
+                # Try loading a FULL PyTorch model first (torch.save(model, ...))
+                # Falls back to constructing model + load_state_dict if needed.
+                full_model_loaded = False
+                model_pt = self.model_dir / "hold5_final_model.pt"
+                model_dir = self.model_dir / "hold5_final_model"
                 try:
-                    dummy = np.zeros((1, self.expected_raw_features), dtype=np.float32)
-                    vt_out = self.var_threshold.transform(dummy)
-                    kb_out = self.kbest_selector.transform(vt_out)
-                    final_input_dim = kb_out.shape[1]
-                except Exception:
-                    # Fallback: try to infer from selector attributes
-                    final_input_dim = getattr(self.kbest_selector, 'k', None)
-                    if final_input_dim is None or final_input_dim == 'all':
-                        support = getattr(self.kbest_selector, 'get_support', None)
-                        if callable(support):
-                            final_input_dim = int(support().sum())
-                    if not isinstance(final_input_dim, int) or final_input_dim <= 0:
-                        # Last resort – keep previous behavior (may error)
-                        final_input_dim = self.expected_raw_features
-
-                # Create model instance with correct parameters from training
-                # Best parameters: hidden_dim=128, num_blocks=2, dropout=0.010716112128622697
-                try:
-                    self.model = CustomResNet(
-                        input_dim=final_input_dim,
-                        hidden_dim=128,   # From best_params
-                        num_blocks=2,     # From best_params  
-                        dropout=0.010716112128622697  # From best_params
-                    )
-                    console.print(
-                        f"Model created with input_dim={final_input_dim}, derived from preprocessing",
-                        style="blue"
-                    )
-                    console.print("Model architecture created successfully", style="green")
-                    
-                    # Load the model weights
-                    model_path = self.model_dir / "hold5_final_model.pt"
-                    console.print(f"Loading model from: {model_path}", style="blue")
-                    self.model.load_state_dict(torch.load(model_path, map_location='cpu'))
-                    self.model.eval()  # Set to evaluation mode
-                    console.print("Model loaded and set to evaluation mode", style="green")
-                    
+                    if model_pt.exists():
+                        console.print(f"Loading full model object from: {model_pt}", style="blue")
+                        self.model = torch.load(model_pt, map_location='cpu')
+                        self.model.eval()
+                        full_model_loaded = True
+                        console.print("Full model loaded and set to eval()", style="green")
+                    elif (model_dir / "data.pkl").exists():
+                        # Support case where .pt was unzipped into a directory
+                        console.print(f"Loading full model from unpacked directory: {model_dir}", style="blue")
+                        self.model = torch.load(model_dir / "data.pkl", map_location='cpu')
+                        self.model.eval()
+                        full_model_loaded = True
+                        console.print("Full model (unpacked) loaded and set to eval()", style="green")
                 except Exception as e:
-                    console.print(f"Error loading model: {e}", style="red")
-                    raise
+                    console.print(f"Full-model load failed, will try state_dict path: {e}", style="yellow")
+
+                if not full_model_loaded:
+                    # Determine final feature count after preprocessing pipeline
+                    try:
+                        dummy = np.zeros((1, self.expected_raw_features), dtype=np.float32)
+                        vt_out = self.var_threshold.transform(dummy)
+                        kb_out = self.kbest_selector.transform(vt_out)
+                        final_input_dim = kb_out.shape[1]
+                    except Exception:
+                        final_input_dim = getattr(self.kbest_selector, 'k', None)
+                        if final_input_dim is None or final_input_dim == 'all':
+                            support = getattr(self.kbest_selector, 'get_support', None)
+                            if callable(support):
+                                final_input_dim = int(support().sum())
+                        if not isinstance(final_input_dim, int) or final_input_dim <= 0:
+                            final_input_dim = self.expected_raw_features
+
+                    # Create model instance and load weights
+                    try:
+                        self.model = CustomResNet(
+                            input_dim=final_input_dim,
+                            hidden_dim=128,
+                            num_blocks=2,
+                            dropout=0.010716112128622697
+                        )
+                        console.print(
+                            f"Model created with input_dim={final_input_dim} (state_dict path)",
+                            style="blue"
+                        )
+                        sd_path = model_pt
+                        console.print(f"Loading state_dict from: {sd_path}", style="blue")
+                        self.model.load_state_dict(torch.load(sd_path, map_location='cpu'))
+                        self.model.eval()
+                        console.print("State_dict loaded and model set to eval()", style="green")
+                    except Exception as e:
+                        console.print(f"Error loading model via state_dict: {e}", style="red")
+                        raise
 
             # Create success table
             table = Table(title="Hold5 Model Components Loaded", show_header=True, header_style="bold magenta")
