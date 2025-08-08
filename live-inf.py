@@ -593,7 +593,13 @@ class LiveVnaInference:
         extra = ""
         if measured_temp is not None:
             diff = prediction - measured_temp
-            extra = f"\nReference (Arduino): {measured_temp:.2f}°C\nError: {diff:+.2f}°C"
+            abs_err = abs(diff)
+            within_half = abs_err <= 0.5
+            extra = (
+                f"\nReference (Arduino): {measured_temp:.2f}°C"
+                f"\nError (pred - ref): {diff:+.2f}°C"
+                f"\nAbs Error: {abs_err:.2f}°C (≤0.5°C: {within_half})"
+            )
         results_text = f"""
 File: {filename}
 Temperature Prediction: {prediction:.2f}°C
@@ -674,9 +680,19 @@ def main():
     args = parser.parse_args()
     
     # Create inference engine
+    # Auto-enable Arduino reading if device is present, unless explicitly requested otherwise
+    auto_read_arduino = args.read_arduino
+    try:
+        if not auto_read_arduino:
+            import os as _os
+            if serial is not None and _os.path.exists(args.arduino_port):
+                auto_read_arduino = True
+    except Exception:
+        pass
+
     inference_engine = LiveVnaInference(
         hw_points=args.points,
-        read_arduino=args.read_arduino,
+        read_arduino=auto_read_arduino,
         arduino_port=args.arduino_port,
         arduino_baud=args.arduino_baud,
     )
