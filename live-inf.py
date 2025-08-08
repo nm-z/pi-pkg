@@ -105,6 +105,12 @@ class LiveVnaInference:
         self.arduino_port = arduino_port
         self.arduino_baud = int(arduino_baud)
         self.temp_regex = re.compile(r"(-?\d+(?:\.\d+)?)\s*°?C?", re.IGNORECASE)
+        # Auto-detect Arduino port if requested and default path missing
+        if self.read_arduino and not os.path.exists(self.arduino_port):
+            detected = self.detect_arduino_port()
+            if detected:
+                console.print(f"Arduino port auto-detected: {detected}", style="cyan")
+                self.arduino_port = detected
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -394,6 +400,15 @@ class LiveVnaInference:
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
+        # If port missing, try auto-detect once per call
+        try:
+            if not os.path.exists(self.arduino_port):
+                detected = self.detect_arduino_port()
+                if detected:
+                    console.print(f"Arduino port auto-detected: {detected}", style="cyan")
+                    self.arduino_port = detected
+        except Exception:
+            pass
         try:
             with serial.Serial(self.arduino_port, self.arduino_baud, timeout=0.5) as ser:  # type: ignore
                 ser.reset_input_buffer()
@@ -419,6 +434,23 @@ class LiveVnaInference:
         except Exception as e:
             console.print(f"Arduino read error on {self.arduino_port}: {e}", style="yellow")
         return None
+
+    def detect_arduino_port(self) -> str | None:
+        """Try to find an Arduino-like serial device. Prefer /dev/ttyACM*, avoid VNA /dev/ttyUSB0."""
+        try:
+            candidates = []
+            # Prefer ACM devices typically used by Arduino
+            for base in ("/dev/ttyACM", "/dev/ttyUSB"):
+                for idx in range(0, 6):
+                    path = f"{base}{idx}"
+                    if os.path.exists(path):
+                        # Skip the VNA serial if known
+                        if path.endswith("ttyUSB0"):
+                            continue
+                        candidates.append(path)
+            return candidates[0] if candidates else None
+        except Exception:
+            return None
 
     def extract_vna_features(self, vna_df):
         """Extract features from VNA data for hold5 model - Return Loss, Phase, Rs, and Xs."""
@@ -572,7 +604,7 @@ class LiveVnaInference:
             prediction = self.run_inference(features)
             
             # Optionally read Arduino temperature
-            measured_temp = self.read_arduino_temp(max_wait_s=2.0)
+            measured_temp = self.read_arduino_temp(max_wait_s=3.0)
             
             # Display results
             self.display_vna_results(file_path.name, prediction, measured_temp)
