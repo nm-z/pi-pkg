@@ -115,6 +115,32 @@ class LiveVnaInference:
                 self.var_threshold = joblib.load(self.model_dir / "hold5_var_threshold.pkl")
                 self.kbest_selector = joblib.load(self.model_dir / "hold5_kbest_selector.pkl")
 
+                # Debug scaler parameters to verify correctness
+                try:
+                    scaler_info = {
+                        "type": type(self.scaler).__name__,
+                        "n_features_in_": getattr(self.scaler, "n_features_in_", None),
+                        "with_mean": getattr(self.scaler, "with_mean", None),
+                        "with_std": getattr(self.scaler, "with_std", None),
+                    }
+                    mean_attr = getattr(self.scaler, "mean_", None)
+                    scale_attr = getattr(self.scaler, "scale_", None)
+                    if mean_attr is not None and hasattr(mean_attr, "shape"):
+                        scaler_info.update({
+                            "mean_shape": tuple(mean_attr.shape),
+                            "mean_min": float(np.min(mean_attr)),
+                            "mean_max": float(np.max(mean_attr)),
+                        })
+                    if scale_attr is not None and hasattr(scale_attr, "shape"):
+                        scaler_info.update({
+                            "scale_shape": tuple(scale_attr.shape),
+                            "scale_min": float(np.min(scale_attr)),
+                            "scale_max": float(np.max(scale_attr)),
+                        })
+                    console.print("Scaler details:", scaler_info, style="cyan")
+                except Exception as _e:
+                    console.print(f"Failed to inspect scaler: {_e}", style="yellow")
+
                 # Define the correct ResNet architecture (must match training)
                 class ResNetBlock(nn.Module):
                     def __init__(self, dim, dropout=0.1):
@@ -445,29 +471,13 @@ class LiveVnaInference:
                 console.print("Missing Phase column", style="red")
                 return None
             
-            # Try different possible column names for Rs (Resistance)
-            rs_col = None
-            for col in vna_df.columns:
-                if col.lower() == 'rs' or 'resistance' in col.lower():
-                    rs_col = col
-                    break
-            
-            if rs_col:
-                rs = vna_df[rs_col].values
-                rsr = resample_to_length(rs, target_len)
-                features.extend(rsr.tolist())
-                console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
-            else:
-                console.print("Missing Rs column", style="red")
-                return None
-            
-            # Try different possible column names for Xs (Reactance)
+            # Try different possible column names for Xs (Reactance) — ensure Xs precedes Rs to match training
             xs_col = None
             for col in vna_df.columns:
                 if col.lower() == 'xs' or 'reactance' in col.lower():
                     xs_col = col
                     break
-            
+
             if xs_col:
                 xs = vna_df[xs_col].values
                 xsr = resample_to_length(xs, target_len)
@@ -475,6 +485,22 @@ class LiveVnaInference:
                 console.print(f"Added {len(xsr)} Xs (Reactance) features from column '{xs_col}' (resampled)", style="green")
             else:
                 console.print("Missing Xs column", style="red")
+                return None
+
+            # Try different possible column names for Rs (Resistance)
+            rs_col = None
+            for col in vna_df.columns:
+                if col.lower() == 'rs' or 'resistance' in col.lower():
+                    rs_col = col
+                    break
+
+            if rs_col:
+                rs = vna_df[rs_col].values
+                rsr = resample_to_length(rs, target_len)
+                features.extend(rsr.tolist())
+                console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
+            else:
+                console.print("Missing Rs column", style="red")
                 return None
             
             console.print(f"Total features extracted: {len(features)}", style="green")
