@@ -1,0 +1,10 @@
+{
+  "hidden_dim": 192,
+  "num_blocks": 5,
+  "dropout": 0.030399090994126104,
+  "lr": 0.0008202389837432419,
+  "batch_size": 32,
+  "use_variance_threshold": false,
+  "use_standard_scaler": true,
+  "use_select_kbest": false
+}

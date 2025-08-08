@@ -1,7 +1,0 @@
-test_r2: 0.9667965173721313
-test_mae: 0.6767505407333374
-test_mse: 1.2493687868118286
-best_params: {'nn_model_type': 'deep_mlp', 'deep_mlp_num_layers': 4, 'deep_mlp_base_dim': 384, 'deep_mlp_dropout': 0.1534305375671793, 'deep_mlp_lr': 0.00058964634553441}
-model_type: neural_network
-dataset_num: 5
-noise_ceiling: 1.087072390434443
