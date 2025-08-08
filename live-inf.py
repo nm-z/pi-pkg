@@ -728,11 +728,11 @@ class LiveVnaInference:
                     return_loss_col = col
                     break
             
+            rl = None
             if return_loss_col:
                 return_loss = vna_df[return_loss_col].values
                 rl = resample_to_length(return_loss, target_len)
-                features.extend(rl.tolist())
-                console.print(f"Added {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
+                console.print(f"Prepared {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
             else:
                 console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
                 return None
@@ -744,11 +744,11 @@ class LiveVnaInference:
                     phase_col = col
                     break
             
+            ph = None
             if phase_col:
                 phase = vna_df[phase_col].values
                 ph = resample_to_length(phase, target_len)
-                features.extend(ph.tolist())
-                console.print(f"Added {len(ph)} Phase features from column '{phase_col}' (resampled)", style="green")
+                console.print(f"Prepared {len(ph)} Phase features from column '{phase_col}' (resampled)", style="green")
             else:
                 console.print("Missing Phase column", style="red")
                 return None
@@ -768,12 +768,10 @@ class LiveVnaInference:
                     console.print("Missing Xs column for 4-channel pipeline", style="red")
                     return None
                 # Assemble in training order
-                s11 = vna_df[return_loss_col].values
-                s11r = resample_to_length(s11, target_len)
+                s11r = rl
+                phr = ph
                 features.extend(s11r.tolist())           # s11_db
                 features.extend(s11r.tolist())           # db (duplicate of s11_db)
-                ph = vna_df[phase_col].values
-                phr = resample_to_length(ph, target_len)
                 features.extend(phr.tolist())            # phase
                 xs = vna_df[xs_col].values
                 xsr = resample_to_length(xs, target_len)
