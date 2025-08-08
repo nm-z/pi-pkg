@@ -410,7 +410,6 @@ class LiveVnaInference:
             ser.write(b"TEMP\r\n")
             line = ser.readline().decode('utf-8', 'ignore').strip()
             if line:
-                console.print(f"[cyan]Arduino raw response: {line}[/cyan]")
                 try:
                     val = float(line)
                     self.latest_arduino_temp = val
@@ -424,6 +423,11 @@ class LiveVnaInference:
         except Exception as e:
             console.print(f"[red]Arduino read error: {e}[/red]")
             return None
+        finally:
+            try:
+                ser.close()  # type: ignore
+            except Exception:
+                pass
 
     def start_arduino_reader(self):
         if serial is None:
