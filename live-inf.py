@@ -95,6 +95,7 @@ class LiveVnaInference:
         self.scaler = None
         self.var_threshold = None
         self.kbest_selector = None
+        self.using_inference_ready = False
         # Hardware sweep points (what we ask VNA to capture)
         self.hw_points = int(hw_points)
         # Model expects features built from 4 columns × 10,001 points
@@ -111,13 +112,28 @@ class LiveVnaInference:
         # Do not auto-detect or fallback; use fixed by-id port when reading on demand
 
     def load_model_components(self):
-        """Load all model components from hold5 saved artifacts."""
+        """Load all model components from hold5 saved artifacts or inference-ready folder."""
         if self.model is None:
             with console.status("[bold blue]Loading hold5 model components..."):
                 # Load preprocessing first so we can derive final input dimensionality
-                self.scaler = joblib.load(self.model_dir / "hold5_scaler.pkl")
-                self.var_threshold = joblib.load(self.model_dir / "hold5_var_threshold.pkl")
-                self.kbest_selector = joblib.load(self.model_dir / "hold5_kbest_selector.pkl")
+                # Support both legacy (var_threshold + kbest + scaler) and inference-ready (scaler only)
+                scaler_path_legacy = self.model_dir / "hold5_scaler.pkl"
+                scaler_path_ir = self.model_dir / "scaler.pkl"
+                if scaler_path_ir.exists():
+                    self.scaler = joblib.load(scaler_path_ir)
+                    self.using_inference_ready = True
+                else:
+                    self.scaler = joblib.load(scaler_path_legacy)
+                    self.using_inference_ready = False
+
+                if not self.using_inference_ready:
+                    vt_path = self.model_dir / "hold5_var_threshold.pkl"
+                    kb_path = self.model_dir / "hold5_kbest_selector.pkl"
+                    self.var_threshold = joblib.load(vt_path) if vt_path.exists() else None
+                    self.kbest_selector = joblib.load(kb_path) if kb_path.exists() else None
+                else:
+                    self.var_threshold = None
+                    self.kbest_selector = None
 
                 # Debug scaler parameters to verify correctness
                 try:
@@ -182,7 +198,9 @@ class LiveVnaInference:
                 # Try loading a FULL PyTorch model first (torch.save(model, ...))
                 # Falls back to constructing model from state_dict if needed.
                 full_model_loaded = False
+                # Support both legacy and inference-ready model filenames
                 model_pt = self.model_dir / "hold5_final_model.pt"
+                model_pt_alt = self.model_dir / "resnet_model.pth"
                 model_dir = self.model_dir / "hold5_final_model"
                 try:
                     if model_pt.exists():
@@ -191,6 +209,12 @@ class LiveVnaInference:
                         self.model.eval()
                         full_model_loaded = True
                         console.print("Full model loaded and set to eval()", style="green")
+                    elif model_pt_alt.exists():
+                        console.print(f"Loading full model object from: {model_pt_alt}", style="blue")
+                        self.model = torch.load(model_pt_alt, map_location='cpu')
+                        self.model.eval()
+                        full_model_loaded = True
+                        console.print("Full model (alt) loaded and set to eval()", style="green")
                     elif (model_dir / "data.pkl").exists():
                         # Support case where .pt was unzipped into a directory
                         console.print(f"Loading full model from unpacked directory: {model_dir}", style="blue")
@@ -227,7 +251,8 @@ class LiveVnaInference:
 
                     # Create model instance dynamically based on state_dict if present
                     try:
-                        sd = torch.load(model_pt, map_location='cpu')
+                        sd_path_to_use = model_pt_alt if model_pt_alt.exists() else model_pt
+                        sd = torch.load(sd_path_to_use, map_location='cpu')
                         from collections import OrderedDict
                         if isinstance(sd, OrderedDict):
                             # Dynamically reconstruct an MLP-ResNet with BatchNorm from state dict
