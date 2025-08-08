@@ -289,9 +289,39 @@ class LiveVnaInference:
             
             # Apply KBest feature selection
             x_kbest = self.kbest_selector.transform(x_var_threshold)
+            try:
+                _xk = np.asarray(x_kbest)
+                console.print(
+                    "x_kbest stats:",
+                    {
+                        "shape": tuple(_xk.shape),
+                        "min": float(_xk.min()),
+                        "max": float(_xk.max()),
+                        "mean": float(_xk.mean()),
+                        "std": float(_xk.std()),
+                    },
+                    style="cyan",
+                )
+            except Exception as _e:
+                console.print(f"Failed to compute x_kbest stats: {_e}", style="yellow")
             
             # Apply scaler
             x_scaled = self.scaler.transform(x_kbest)
+            try:
+                _xs = np.asarray(x_scaled)
+                console.print(
+                    "x_scaled stats:",
+                    {
+                        "shape": tuple(_xs.shape),
+                        "min": float(_xs.min()),
+                        "max": float(_xs.max()),
+                        "mean": float(_xs.mean()),
+                        "std": float(_xs.std()),
+                    },
+                    style="cyan",
+                )
+            except Exception as _e:
+                console.print(f"Failed to compute x_scaled stats: {_e}", style="yellow")
             
             # Convert to PyTorch tensor
             x_tensor = torch.FloatTensor(x_scaled)
