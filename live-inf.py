@@ -5,7 +5,7 @@ Live VNA Monitoring and Temperature Inference using hold5 model
 Real-time script for VNA data monitoring and temperature prediction.
 Uses Java VNAhl command to capture VNA data, then runs inference using hold5 model.
 
-VERSION: 1.0.5
+VERSION: 1.0.6
 """
 
 import argparse
@@ -30,7 +30,7 @@ console = Console()
 
 # Print versions immediately when script starts
 console.print("[bold blue]=== VERSION INFO ===[/bold blue]")
-console.print(f"Script Version: 1.0.5")
+console.print(f"Script Version: 1.0.6")
 console.print(f"Python: {sys.version}")
 console.print(f"NumPy: {np.__version__}")
 console.print(f"Pandas: {pd.__version__}")
@@ -90,13 +90,18 @@ class LiveVnaInference:
         self.scaler = None
         self.var_threshold = None
         self.kbest_selector = None
+        # Raw features expected from CSV before preprocessing (4 cols × 10,001 points)
+        self.expected_raw_features = 40004
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
         if self.model is None:
             with console.status("[bold blue]Loading hold5 model components..."):
-                # Load the trained model - this is a PyTorch model, not sklearn
-                
+                # Load preprocessing first so we can derive final input dimensionality
+                self.scaler = joblib.load(self.model_dir / "hold5_scaler.pkl")
+                self.var_threshold = joblib.load(self.model_dir / "hold5_var_threshold.pkl")
+                self.kbest_selector = joblib.load(self.model_dir / "hold5_kbest_selector.pkl")
+
                 # Define the correct ResNet architecture (must match training)
                 class ResNetBlock(nn.Module):
                     def __init__(self, dim, dropout=0.1):
@@ -131,16 +136,38 @@ class LiveVnaInference:
                             x = block(x)
                         return self.output(x).squeeze(-1)
                 
+                # Determine final feature count after preprocessing pipeline so
+                # the PyTorch model input dimension matches the checkpoint
+                # (avoids size-mismatch errors)
+                try:
+                    dummy = np.zeros((1, self.expected_raw_features), dtype=np.float32)
+                    vt_out = self.var_threshold.transform(dummy)
+                    kb_out = self.kbest_selector.transform(vt_out)
+                    final_input_dim = kb_out.shape[1]
+                except Exception:
+                    # Fallback: try to infer from selector attributes
+                    final_input_dim = getattr(self.kbest_selector, 'k', None)
+                    if final_input_dim is None or final_input_dim == 'all':
+                        support = getattr(self.kbest_selector, 'get_support', None)
+                        if callable(support):
+                            final_input_dim = int(support().sum())
+                    if not isinstance(final_input_dim, int) or final_input_dim <= 0:
+                        # Last resort – keep previous behavior (may error)
+                        final_input_dim = self.expected_raw_features
+
                 # Create model instance with correct parameters from training
                 # Best parameters: hidden_dim=128, num_blocks=2, dropout=0.010716112128622697
                 try:
                     self.model = CustomResNet(
-                        input_dim=40004,  # 4 measurements × 10,001 frequency points
+                        input_dim=final_input_dim,
                         hidden_dim=128,   # From best_params
                         num_blocks=2,     # From best_params  
                         dropout=0.010716112128622697  # From best_params
                     )
-                    console.print(f"Model created with input_dim=40004, expecting 40,004 features", style="blue")
+                    console.print(
+                        f"Model created with input_dim={final_input_dim}, derived from preprocessing",
+                        style="blue"
+                    )
                     console.print("Model architecture created successfully", style="green")
                     
                     # Load the model weights
@@ -153,11 +180,6 @@ class LiveVnaInference:
                 except Exception as e:
                     console.print(f"Error loading model: {e}", style="red")
                     raise
-
-                # Load preprocessing components
-                self.scaler = joblib.load(self.model_dir / "hold5_scaler.pkl")
-                self.var_threshold = joblib.load(self.model_dir / "hold5_var_threshold.pkl")
-                self.kbest_selector = joblib.load(self.model_dir / "hold5_kbest_selector.pkl")
 
             # Create success table
             table = Table(title="Hold5 Model Components Loaded", show_header=True, header_style="bold magenta")
