@@ -97,6 +97,7 @@ class LiveVnaInference:
         self.kbest_selector = None
         self.using_inference_ready = False
         self.inference_ready_model_path = None
+        self.model_params: dict | None = None
         # Hardware sweep points (what we ask VNA to capture)
         self.hw_points = int(hw_points)
         # Model expects features built from 4 columns × 10,001 points
@@ -135,6 +136,15 @@ class LiveVnaInference:
                 kb_candidates = [self.model_dir / "kbest_selector.pkl", self.model_dir / "hold5_kbest_selector.pkl"]
                 self.var_threshold = next((joblib.load(p) for p in vt_candidates if p.exists()), None)
                 self.kbest_selector = next((joblib.load(p) for p in kb_candidates if p.exists()), None)
+                # Load model params if present (controls preprocessor order/toggles)
+                params_path = self.model_dir / "model_params.json"
+                if params_path.exists():
+                    try:
+                        import json
+                        with open(params_path, 'r', encoding='utf-8') as f:
+                            self.model_params = json.load(f)
+                    except Exception:
+                        self.model_params = None
 
                 # Debug scaler parameters to verify correctness
                 try:
@@ -623,10 +633,18 @@ class LiveVnaInference:
         - Inference-ready: 3 channels (Return Loss, Phase, |Z|) -> 30003 features
         """
         try:
-            # Determine target channels based on pipeline
-            # Inference-ready expects only scaler with n_features_in_ ~ 30003 (3 × 10001)
-            use_three_channels = bool(self.using_inference_ready)
-            num_channels = 3 if use_three_channels else 4
+            # Determine target channels based on scaler-reported expected input
+            use_three_channels = False
+            num_channels = 4
+            try:
+                n_in = int(getattr(self.scaler, 'n_features_in_', 0))
+                if n_in > 0 and (n_in % self.model_points) == 0:
+                    channels_expected = n_in // self.model_points
+                    if channels_expected in (3, 4):
+                        num_channels = channels_expected
+                        use_three_channels = (channels_expected == 3)
+            except Exception:
+                pass
             # Extract raw values from selected channels (NOT frequency)
             features = []
             target_len = self.model_points
