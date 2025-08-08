@@ -180,7 +180,7 @@ class LiveVnaInference:
                         return self.output(x).squeeze(-1)
                 
                 # Try loading a FULL PyTorch model first (torch.save(model, ...))
-                # Falls back to constructing model + load_state_dict if needed.
+                # Falls back to constructing model from state_dict if needed.
                 full_model_loaded = False
                 model_pt = self.model_dir / "hold5_final_model.pt"
                 model_dir = self.model_dir / "hold5_final_model"
@@ -204,38 +204,145 @@ class LiveVnaInference:
                 if not full_model_loaded:
                     # Determine final feature count after preprocessing pipeline
                     try:
-                        dummy = np.zeros((1, self.expected_raw_features), dtype=np.float32)
-                        vt_out = self.var_threshold.transform(dummy)
-                        kb_out = self.kbest_selector.transform(vt_out)
-                        final_input_dim = kb_out.shape[1]
+                        # Prefer scaler-reported dimensionality for reliability
+                        final_input_dim = int(getattr(self.scaler, 'n_features_in_', 0))
+                        if not isinstance(final_input_dim, int) or final_input_dim <= 0:
+                            # Fallback to transform pass on non-degenerate data
+                            dummy = np.random.randn(1, self.expected_raw_features).astype(np.float32)
+                            vt_out = self.var_threshold.transform(dummy)
+                            kb_out = self.kbest_selector.transform(vt_out)
+                            final_input_dim = int(kb_out.shape[1])
                     except Exception:
-                        final_input_dim = getattr(self.kbest_selector, 'k', None)
+                        # Fallback chain using selector metadata
+                        final_input_dim = getattr(self.scaler, 'n_features_in_', None) or getattr(self.kbest_selector, 'k', None)
                         if final_input_dim is None or final_input_dim == 'all':
                             support = getattr(self.kbest_selector, 'get_support', None)
                             if callable(support):
-                                final_input_dim = int(support().sum())
+                                try:
+                                    final_input_dim = int(support().sum())
+                                except Exception:
+                                    final_input_dim = None
                         if not isinstance(final_input_dim, int) or final_input_dim <= 0:
                             final_input_dim = self.expected_raw_features
 
-                    # Create model instance and load weights
+                    # Create model instance dynamically based on state_dict if present
                     try:
-                        self.model = CustomResNet(
-                            input_dim=final_input_dim,
-                            hidden_dim=128,
-                            num_blocks=2,
-                            dropout=0.010716112128622697
-                        )
-                        console.print(
-                            f"Model created with input_dim={final_input_dim} (state_dict path)",
-                            style="blue"
-                        )
-                        sd_path = model_pt
-                        console.print(f"Loading state_dict from: {sd_path}", style="blue")
-                        self.model.load_state_dict(torch.load(sd_path, map_location='cpu'))
-                        self.model.eval()
-                        console.print("State_dict loaded and model set to eval()", style="green")
+                        sd = torch.load(model_pt, map_location='cpu')
+                        from collections import OrderedDict
+                        if isinstance(sd, OrderedDict):
+                            # Dynamically reconstruct an MLP-ResNet with BatchNorm from state dict
+                            linear_keys = [(k, v) for k, v in sd.items() if k.startswith('backbone.') and k.endswith('.weight') and hasattr(v, 'ndim') and int(getattr(v, 'ndim', 0)) == 2]
+                            # Sort by numeric index inside 'backbone.X.weight'
+                            def idx_of(key: str) -> int:
+                                try:
+                                    return int(key.split('.')[1])
+                                except Exception:
+                                    return 0
+                            linear_keys.sort(key=lambda kv: idx_of(kv[0]))
+
+                            layer_dims: list[tuple[int, int]] = []
+                            for k, v in linear_keys:
+                                out_features, in_features = int(v.shape[0]), int(v.shape[1])
+                                layer_dims.append((in_features, out_features))
+
+                            if not layer_dims:
+                                raise RuntimeError("No backbone linear layers found in state_dict")
+
+                            last_hidden_dim = layer_dims[-1][1]
+                            has_bn = any(k.startswith('backbone.') and '.running_var' in k for k in sd.keys())
+                            has_residual = any(k.startswith('residual.') for k in sd.keys())
+
+                            class InferredMLPResNet(nn.Module):
+                                def __init__(self, input_dim: int, dims: list[tuple[int, int]], use_batchnorm: bool, use_residual: bool, final_out: int = 1):
+                                    super().__init__()
+                                    self.use_residual = use_residual
+                                    backbone_layers: list[nn.Module] = []
+                                    for in_dim, out_dim in dims:
+                                        backbone_layers.append(nn.Linear(in_dim, out_dim))
+                                        if use_batchnorm:
+                                            backbone_layers.append(nn.BatchNorm1d(out_dim))
+                                        backbone_layers.append(nn.ReLU())
+                                    self.backbone = nn.Sequential(*backbone_layers)
+                                    if use_residual:
+                                        self.residual = nn.Linear(input_dim, dims[-1][1])
+                                    else:
+                                        self.residual = None
+                                    self.head = nn.Linear(dims[-1][1], final_out)
+
+                                def forward(self, x: torch.Tensor) -> torch.Tensor:
+                                    y = self.backbone(x)
+                                    if self.residual is not None:
+                                        y = y + self.residual(x)
+                                    y = self.head(y)
+                                    return y.squeeze(-1)
+
+                            self.model = InferredMLPResNet(
+                                input_dim=final_input_dim,
+                                dims=layer_dims,
+                                use_batchnorm=has_bn,
+                                use_residual=has_residual,
+                                final_out=1,
+                            )
+
+                            # Manual parameter assignment to avoid name-mismatch
+                            # Assign backbone
+                            lin_ptr = 0
+                            bn_ptr = 0
+                            for name, module in self.model.backbone.named_children():
+                                if isinstance(module, nn.Linear):
+                                    k_w = f"backbone.{idx_of(linear_keys[lin_ptr][0])}.weight"
+                                    k_b = f"backbone.{idx_of(linear_keys[lin_ptr][0])}.bias"
+                                    module.weight.data.copy_(sd[k_w])
+                                    module.bias.data.copy_(sd[k_b])
+                                    lin_ptr += 1
+                                elif isinstance(module, nn.BatchNorm1d):
+                                    # BatchNorm keys appear at next index in original model; find nearest bn tensors matching out_dim
+                                    # Heuristic: pick bn with matching num_features
+                                    out_dim = module.num_features
+                                    # Find any bn tensors with that size
+                                    bn_weight_key = next((k for k, v in sd.items() if k.startswith('backbone.') and k.endswith('.weight') and v.ndim == 1 and int(v.shape[0]) == out_dim), None)
+                                    if bn_weight_key is None:
+                                        raise RuntimeError("BatchNorm parameters not found in state_dict")
+                                    base = bn_weight_key.rsplit('.', 1)[0]
+                                    module.weight.data.copy_(sd[f"{base}.weight"])  # type: ignore
+                                    module.bias.data.copy_(sd[f"{base}.bias"])    # type: ignore
+                                    module.running_mean.data.copy_(sd[f"{base}.running_mean"])  # type: ignore
+                                    module.running_var.data.copy_(sd[f"{base}.running_var"])    # type: ignore
+                                    # Remove used keys to avoid reusing
+                                    for suffix in ("weight", "bias", "running_mean", "running_var"):
+                                        sd.pop(f"{base}.{suffix}", None)
+                                    bn_ptr += 1
+
+                            # Residual
+                            if has_residual and hasattr(self.model, 'residual') and self.model.residual is not None:
+                                self.model.residual.weight.data.copy_(sd['residual.weight'])  # type: ignore
+                                self.model.residual.bias.data.copy_(sd['residual.bias'])      # type: ignore
+
+                            # Head
+                            self.model.head.weight.data.copy_(sd['head.weight'])  # type: ignore
+                            self.model.head.bias.data.copy_(sd['head.bias'])      # type: ignore
+
+                            self.model.eval()
+                            console.print("Dynamically reconstructed MLP-ResNet model and set to eval()", style="green")
+                        else:
+                            # Unknown object — fallback to simple CustomResNet but with correct input dim
+                            self.model = CustomResNet(
+                                input_dim=final_input_dim,
+                                hidden_dim=128,
+                                num_blocks=2,
+                                dropout=0.010716112128622697
+                            )
+                            console.print(
+                                f"Model created with input_dim={final_input_dim} (fallback CustomResNet)",
+                                style="blue"
+                            )
+                            sd_path = model_pt
+                            console.print(f"Loading state_dict from: {sd_path}", style="blue")
+                            self.model.load_state_dict(torch.load(sd_path, map_location='cpu'), strict=False)
+                            self.model.eval()
+                            console.print("State_dict loaded with strict=False and model set to eval()", style="yellow")
                     except Exception as e:
-                        console.print(f"Error loading model via state_dict: {e}", style="red")
+                        console.print(f"Error constructing/loading model from state_dict: {e}", style="red")
                         raise
 
             # Create success table
