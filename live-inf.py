@@ -449,8 +449,12 @@ class LiveVnaInference:
                     try:
                         val = float(line)
                         if -50.0 <= val <= 200.0:
-                            self.latest_arduino_temp = val
-                            return val
+                            # Convert Fahrenheit to Celsius if it looks like °F (e.g., > 60)
+                            c_val = (val - 32.0) * (5.0 / 9.0) if val > 60.0 else val
+                            self.latest_arduino_temp = c_val
+                            if val != c_val:
+                                console.print(f"[cyan]Arduino converted: {val}F -> {c_val:.2f}C[/cyan]")
+                            return c_val
                     except ValueError:
                         continue
                 # Fallback: read ambient streaming without command for a short window
