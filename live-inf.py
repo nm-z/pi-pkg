@@ -236,17 +236,43 @@ class LiveVnaInference:
                 if not full_model_loaded:
                     # Determine final feature count after preprocessing pipeline
                     try:
-                        # Prefer scaler-reported dimensionality for reliability
-                        final_input_dim = int(getattr(self.scaler, 'n_features_in_', 0))
+                        # Prefer final post-preprocessing dimensionality
+                        final_input_dim = None
+                        if self.kbest_selector is not None:
+                            k_val = getattr(self.kbest_selector, 'k', None)
+                            if isinstance(k_val, int) and k_val > 0:
+                                final_input_dim = k_val
+                            else:
+                                support = getattr(self.kbest_selector, 'get_support', None)
+                                if callable(support):
+                                    try:
+                                        final_input_dim = int(support().sum())
+                                    except Exception:
+                                        final_input_dim = None
+                        if final_input_dim is None and self.model_params is not None:
+                            kbest_k = self.model_params.get('kbest_k')
+                            if isinstance(kbest_k, int) and kbest_k > 0:
+                                final_input_dim = kbest_k
+                        if final_input_dim is None:
+                            # Fallback to scaler-reported input
+                            final_input_dim = int(getattr(self.scaler, 'n_features_in_', 0))
                         if not isinstance(final_input_dim, int) or final_input_dim <= 0:
-                            # Fallback to transform pass on non-degenerate data
+                            # Last-chance transform simulation
                             dummy = np.random.randn(1, self.expected_raw_features).astype(np.float32)
-                            vt_out = self.var_threshold.transform(dummy)
-                            kb_out = self.kbest_selector.transform(vt_out)
-                            final_input_dim = int(kb_out.shape[1])
+                            x = dummy
+                            if self.var_threshold is not None:
+                                x = self.var_threshold.transform(x)
+                            if self.scaler is not None:
+                                try:
+                                    x = self.scaler.transform(x)
+                                except Exception:
+                                    pass
+                            if self.kbest_selector is not None:
+                                x = self.kbest_selector.transform(x)
+                            final_input_dim = int(x.shape[1])
                     except Exception:
                         # Fallback chain using selector metadata
-                        final_input_dim = getattr(self.scaler, 'n_features_in_', None) or getattr(self.kbest_selector, 'k', None)
+                        final_input_dim = getattr(self.kbest_selector, 'k', None) or getattr(self.scaler, 'n_features_in_', None)
                         if final_input_dim is None or final_input_dim == 'all':
                             support = getattr(self.kbest_selector, 'get_support', None)
                             if callable(support):
