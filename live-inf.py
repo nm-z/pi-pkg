@@ -5,7 +5,7 @@ Live VNA Monitoring and Temperature Inference using hold5 model
 Real-time script for VNA data monitoring and temperature prediction.
 Uses Java VNAhl command to capture VNA data, then runs inference using hold5 model.
 
-VERSION: 1.0.6
+VERSION: 1.0.7
 """
 
 import argparse
@@ -30,7 +30,7 @@ console = Console()
 
 # Print versions immediately when script starts
 console.print("[bold blue]=== VERSION INFO ===[/bold blue]")
-console.print(f"Script Version: 1.0.6")
+console.print(f"Script Version: 1.0.7")
 console.print(f"Python: {sys.version}")
 console.print(f"NumPy: {np.__version__}")
 console.print(f"Pandas: {pd.__version__}")
@@ -68,7 +68,7 @@ class VNADataHandler(FileSystemEventHandler):
 class LiveVnaInference:
     """Live VNA monitoring and temperature inference using hold5 model."""
 
-    def __init__(self):
+    def __init__(self, hw_points: int = 10001):
         # Use hold5 model directory
         self.model_dir = Path("best_model_hold5")
         
@@ -90,8 +90,11 @@ class LiveVnaInference:
         self.scaler = None
         self.var_threshold = None
         self.kbest_selector = None
-        # Raw features expected from CSV before preprocessing (4 cols × 10,001 points)
-        self.expected_raw_features = 40004
+        # Hardware sweep points (what we ask VNA to capture)
+        self.hw_points = int(hw_points)
+        # Model expects features built from 4 columns × 10,001 points
+        self.model_points = 10001
+        self.expected_raw_features = 4 * self.model_points
 
     def load_model_components(self):
         """Load all model components from hold5 saved artifacts."""
@@ -205,14 +208,14 @@ class LiveVnaInference:
 
         try:
             # Start VNAhl with the correct Java command and parameters
-            # Adjusted frequency range and steps to ensure we get ~10,001 data points
+                # Adjusted frequency range and steps; steps are configurable for latency/accuracy
             cmd = [
                 "java",
                 "-Dpurejavacomm.log=false",
                 "-Dpurejavacomm.debug=false",
                 "-Dfstart=45000000",
-                "-Dfstop=55000000",  # Reduced range to get more points
-                "-Dfsteps=10001",
+                    "-Dfstop=55000000",  # Reduced range
+                    f"-Dfsteps={self.hw_points}",
                 "-DdriverId=20",
                 "-Dcalfile=NATES-miniVNA_Tiny.cal",
                 "-Dexports=csv",
@@ -278,9 +281,19 @@ class LiveVnaInference:
     def extract_vna_features(self, vna_df):
         """Extract features from VNA data for hold5 model - Return Loss, Phase, Rs, and Xs."""
         try:
-            # The hold5 model expects 40,004 features from 4 measurement columns with 10,001 values each
+            # The model expects 4 measurement series resampled to self.model_points each
+            # so total raw features are constant (4 × self.model_points)
             # Extract raw values from Return Loss(dB), Phase(deg), Rs, and Xs (NOT frequency)
             features = []
+            target_len = self.model_points
+
+            def resample_to_length(arr: np.ndarray, target: int) -> np.ndarray:
+                if arr.size == target:
+                    return arr.astype(np.float32, copy=False)
+                # Robust linear interpolation on normalized index
+                x_old = np.linspace(0.0, 1.0, num=arr.size, endpoint=True)
+                x_new = np.linspace(0.0, 1.0, num=target, endpoint=True)
+                return np.interp(x_new, x_old, arr.astype(float)).astype(np.float32)
             
             # Show all available columns for debugging
             console.print(f"Available columns: {list(vna_df.columns)}", style="cyan")
@@ -294,8 +307,9 @@ class LiveVnaInference:
             
             if return_loss_col:
                 return_loss = vna_df[return_loss_col].values
-                features.extend(return_loss.tolist())
-                console.print(f"Added {len(return_loss)} Return Loss features from column '{return_loss_col}'", style="green")
+                rl = resample_to_length(return_loss, target_len)
+                features.extend(rl.tolist())
+                console.print(f"Added {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
             else:
                 console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
                 return None
@@ -309,8 +323,9 @@ class LiveVnaInference:
             
             if phase_col:
                 phase = vna_df[phase_col].values
-                features.extend(phase.tolist())
-                console.print(f"Added {len(phase)} Phase features from column '{phase_col}'", style="green")
+                ph = resample_to_length(phase, target_len)
+                features.extend(ph.tolist())
+                console.print(f"Added {len(ph)} Phase features from column '{phase_col}' (resampled)", style="green")
             else:
                 console.print("Missing Phase column", style="red")
                 return None
@@ -324,8 +339,9 @@ class LiveVnaInference:
             
             if rs_col:
                 rs = vna_df[rs_col].values
-                features.extend(rs.tolist())
-                console.print(f"Added {len(rs)} Rs (Resistance) features from column '{rs_col}'", style="green")
+                rsr = resample_to_length(rs, target_len)
+                features.extend(rsr.tolist())
+                console.print(f"Added {len(rsr)} Rs (Resistance) features from column '{rs_col}' (resampled)", style="green")
             else:
                 console.print("Missing Rs column", style="red")
                 return None
@@ -339,8 +355,9 @@ class LiveVnaInference:
             
             if xs_col:
                 xs = vna_df[xs_col].values
-                features.extend(xs.tolist())
-                console.print(f"Added {len(xs)} Xs (Reactance) features from column '{xs_col}'", style="green")
+                xsr = resample_to_length(xs, target_len)
+                features.extend(xsr.tolist())
+                console.print(f"Added {len(xsr)} Xs (Reactance) features from column '{xs_col}' (resampled)", style="green")
             else:
                 console.print("Missing Xs column", style="red")
                 return None
@@ -389,8 +406,11 @@ class LiveVnaInference:
             console.print(f"Extracted {len(features)} features", style="green")
             
             # Check if we have the expected number of features
-            if len(features) != 40004:
-                console.print(f"ERROR: Expected 40,004 features but got {len(features)}", style="red")
+            if len(features) != self.expected_raw_features:
+                console.print(
+                    f"ERROR: Expected {self.expected_raw_features:,} features but got {len(features):,}",
+                    style="red"
+                )
                 console.print("This will cause a shape mismatch with the model", style="red")
                 return
             
@@ -481,10 +501,11 @@ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
 def main():
     """Main function."""
     parser = argparse.ArgumentParser(description="Live VNA Monitoring with Hold5 Model")
+    parser.add_argument("--points", type=int, default=10001, help="Hardware sweep points passed to VNAhl (-Dfsteps). Inference will resample to model's expected length.")
     args = parser.parse_args()
     
     # Create inference engine
-    inference_engine = LiveVnaInference()
+    inference_engine = LiveVnaInference(hw_points=args.points)
     
     # Start live monitoring
     inference_engine.start_live_monitoring()
