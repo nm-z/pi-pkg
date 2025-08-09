@@ -679,7 +679,7 @@ class LiveVnaInference:
                 n_in = int(getattr(self.scaler, 'n_features_in_', 0))
                 if n_in > 0 and (n_in % self.model_points) == 0:
                     channels_expected = n_in // self.model_points
-                    if channels_expected in (3, 4):
+                    if channels_expected in (2, 3, 4):
                         num_channels = channels_expected
                         use_three_channels = (channels_expected == 3)
             except Exception:
@@ -802,6 +802,14 @@ class LiveVnaInference:
                     mr = resample_to_length(mag, target_len)
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
+            elif channels_expected == 2:
+                # Two-channel pipeline: [s11_db, phase]
+                if rl is None or ph is None:
+                    console.print("Missing RL or Phase for 2-channel pipeline", style="red")
+                    return None
+                features.extend(rl.tolist())
+                features.extend(ph.tolist())
+                console.print("Assembled 2-channel features: RL, phase", style="green")
             else:
                 # Legacy 4-channel pipeline: Return Loss, Phase, Xs, Rs
                 xs_col = None
