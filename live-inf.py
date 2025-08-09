@@ -738,12 +738,22 @@ class LiveVnaInference:
                 console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
                 return None
             
-            # Try different possible column names for Phase
+            # Try different possible column names for Phase (prefer RP (°) if present)
             phase_col = None
-            for col in vna_df.columns:
-                if 'phase' in col.lower():
-                    phase_col = col
+            # Strong preference list
+            preferred_phase = [
+                'rp (°)', 'rp(°)', 'rp', 'phase(deg)', 'phase (deg)', 'phase'
+            ]
+            lower_map = {col.lower().strip(): col for col in vna_df.columns}
+            for key in preferred_phase:
+                if key in lower_map:
+                    phase_col = lower_map[key]
                     break
+            if phase_col is None:
+                for col in vna_df.columns:
+                    if 'phase' in col.lower():
+                        phase_col = col
+                        break
             
             ph = None
             if phase_col:
