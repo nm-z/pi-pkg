@@ -21,6 +21,9 @@ import joblib
 import torch
 from torch import nn
 import re
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 try:
     import serial
 except Exception:
@@ -956,6 +959,12 @@ class LiveVnaInference:
             
             console.print(f"Loaded VNA data: {vna_df.shape}", style="green")
             
+            # Save a quick plot of the sweep for debugging/verification
+            try:
+                self.save_sweep_plot(vna_df, file_path.name)
+            except Exception as _e:
+                console.print(f"Plot save failed: {_e}", style="yellow")
+
             # Proceed with inference regardless of capture shape per D5 requirement
             
             # Extract features
@@ -993,6 +1002,37 @@ class LiveVnaInference:
             
         except Exception as e:
             console.print(f"Error processing VNA file: {e}", style="red")
+
+    def save_sweep_plot(self, vna_df: pd.DataFrame, fname: str) -> None:
+        """Save a PNG plot of the sweep (RL, Phase, Rs/Xs) vs Frequency."""
+        out_dir = Path("vna-live-plots")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / (Path(fname).stem + ".png")
+
+        freq = pd.to_numeric(vna_df.get('Frequency(Hz)', pd.Series(dtype=float)), errors='coerce')
+        rl = pd.to_numeric(vna_df.get('Return Loss(dB)', pd.Series(dtype=float)), errors='coerce')
+        phase = pd.to_numeric(vna_df.get('Phase(deg)', pd.Series(dtype=float)), errors='coerce')
+        rs = pd.to_numeric(vna_df.get('Rs', pd.Series(dtype=float)), errors='coerce')
+        xs = pd.to_numeric(vna_df.get('Xs', pd.Series(dtype=float)), errors='coerce')
+
+        plt.figure(figsize=(12, 7))
+        ax1 = plt.gca()
+        if rl.notna().any():
+            ax1.plot(freq, rl, label='RL (dB)', color='tab:blue')
+        if phase.notna().any():
+            ax1.plot(freq, phase, label='Phase (deg)', color='tab:orange', alpha=0.7)
+        if rs.notna().any():
+            ax1.plot(freq, rs, label='Rs (Ω)', color='tab:green', alpha=0.7)
+        if xs.notna().any():
+            ax1.plot(freq, xs, label='Xs (Ω)', color='tab:red', alpha=0.7)
+        ax1.set_xlabel('Frequency (Hz)')
+        ax1.set_ylabel('RL/Phase/Rs/Xs')
+        ax1.grid(True, alpha=0.3)
+        ax1.legend(loc='best')
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=140)
+        plt.close()
+        console.print(f"Saved sweep plot: {out_path}", style="green")
 
     def display_vna_results(self, filename, prediction, measured_temp=None):
         """Display inference results."""
