@@ -577,37 +577,66 @@ class LiveVnaInference:
             return prediction
 
     def read_arduino_temp(self, port: str | None = None, baud: int | None = None, timeout: float = 2.0):
-        """Send 'TEMP' twice and return the second full line using a single session and read-until for stability."""
+        """Read one temperature value from Arduino.
+        - Auto-detect port if not present
+        - Parse using regex and plain float fallback
+        - Returns None if no valid reading in timeout
+        """
         if not self.read_arduino:
             return None
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
-        fixed_port = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Due_Prog._Port_24336303633351406111-if00"
-        fixed_baud = 115200
+        sel_port = port or self.arduino_port
+        if not os.path.exists(sel_port):
+            detected = self.detect_arduino_port()
+            if detected:
+                sel_port = detected
+                self.arduino_port = detected
+        sel_baud = baud or self.arduino_baud
         ser = None
         try:
-            ser = serial.Serial(fixed_port, fixed_baud, timeout=1, write_timeout=1)  # type: ignore
+            ser = serial.Serial(sel_port, sel_baud, timeout=1, write_timeout=1)  # type: ignore
             try:
                 ser.setDTR(False)
             except Exception:
                 pass
-            time.sleep(3)
-            # First probe (discard)
-            ser.write(b"TEMP\r\n")
-            _ = ser.read_until(b"\n")
-            # Second probe (use)
-            ser.write(b"TEMP\r\n")
-            raw = ser.read_until(b"\n")
-            line = raw.decode('utf-8', 'ignore').strip()
-            if not line:
-                return None
             try:
-                val = float(line)
-                self.latest_arduino_temp = val
-                return val
-            except ValueError:
-                return None
+                ser.reset_input_buffer()
+                ser.reset_output_buffer()
+            except Exception:
+                pass
+            # Try request/response, then read until timeout
+            try:
+                ser.write(b"TEMP\r\n")
+            except Exception:
+                pass
+            deadline = time.time() + float(timeout)
+            last_val = None
+            while time.time() < deadline:
+                raw = ser.read_until(b"\n")
+                if not raw:
+                    continue
+                line = raw.decode('utf-8', 'ignore').strip()
+                if not line:
+                    continue
+                m = self.temp_regex.search(line)
+                if m:
+                    try:
+                        last_val = float(m.group(1))
+                        break
+                    except Exception:
+                        continue
+                else:
+                    try:
+                        last_val = float(line)
+                        break
+                    except Exception:
+                        continue
+            if last_val is not None and -40.0 <= last_val <= 200.0:
+                self.latest_arduino_temp = float(last_val)
+                return float(last_val)
+            return None
         except serial.SerialException as e:  # type: ignore
             console.print(f"[red]Arduino read error: {e}[/red]")
             return None
@@ -779,7 +808,7 @@ class LiveVnaInference:
             phase_col = None
             # Strong preference list
             preferred_phase = [
-                'rp (°)', 'rp(°)', 'rp', 'phase(deg)', 'phase (deg)', 'phase'
+                'rp (°)', 'rp(°)', 'rp', 'theta', 'phase(deg)', 'phase (deg)', 'phase'
             ]
             lower_map = {col.lower().strip(): col for col in vna_df.columns}
             for key in preferred_phase:
@@ -1196,6 +1225,10 @@ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
         
         # Load model components
         self.load_model_components()
+        
+        # Start Arduino background reader early if enabled
+        if self.read_arduino:
+            self.start_arduino_reader()
         
         # Start VNAhl capture
         if not self.start_vna_capture():
