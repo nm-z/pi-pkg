@@ -961,23 +961,23 @@ class LiveVnaInference:
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
             elif channels_expected == 2:
-                # Two-channel pipeline for D5: [phase, rs]. If Rs missing/degenerate, derive Rs = |Z| * cos(Theta).
+                # Two-channel pipeline override: [phase, Xs]. If Xs missing/degenerate, derive Xs = |Z| * sin(Theta).
                 # Phase already prepared as 'ph'
-                rs_vals_raw = None
-                rs_col = next((c for c in vna_df.columns if c.lower() == 'rs' or 'resistance' in c.lower()), None)
-                if rs_col is not None:
+                xs_vals_raw = None
+                xs_col = next((c for c in vna_df.columns if c.lower() == 'xs' or 'reactance' in c.lower()), None)
+                if xs_col is not None:
                     try:
-                        rs_vals_raw = pd.to_numeric(vna_df[rs_col], errors='coerce').to_numpy()
+                        xs_vals_raw = column_to_numeric(xs_col)
                     except Exception:
-                        rs_vals_raw = None
-                # If Rs missing or near-constant, derive from |Z| and Theta when available
+                        xs_vals_raw = None
+                # If Xs missing or near-constant, derive from |Z| and Theta when available
                 derive_from_zt = False
-                if rs_vals_raw is None or not np.isfinite(rs_vals_raw).any():
+                if xs_vals_raw is None or not np.isfinite(xs_vals_raw).any():
                     derive_from_zt = True
                 else:
                     try:
-                        rs_std = float(np.nanstd(rs_vals_raw))
-                        if rs_std < 1e-6:
+                        xs_std = float(np.nanstd(xs_vals_raw))
+                        if xs_std < 1e-6:
                             derive_from_zt = True
                     except Exception:
                         derive_from_zt = True
@@ -985,24 +985,24 @@ class LiveVnaInference:
                     z_col = next((c for c in vna_df.columns if c.strip().lower() in {'|z|', 'z', 'mag', 'magnitude'} or '|z|' in c.lower()), None)
                     th_col = next((c for c in vna_df.columns if c.strip().lower() == 'theta'), None)
                     if z_col is None or th_col is None:
-                        console.print("Cannot derive Rs: missing |Z| or Theta columns", style="red")
+                        console.print("Cannot derive Xs: missing |Z| or Theta columns", style="red")
                         return None
                     try:
-                        z_vals = pd.to_numeric(vna_df[z_col], errors='coerce').to_numpy(dtype=float)
-                        th_vals_deg = pd.to_numeric(vna_df[th_col], errors='coerce').to_numpy(dtype=float)
+                        z_vals = column_to_numeric(z_col)
+                        th_vals_deg = column_to_numeric(th_col)
                         th_rad = np.deg2rad(th_vals_deg)
-                        rs_vals_raw = z_vals * np.cos(th_rad)
+                        xs_vals_raw = z_vals * np.sin(th_rad)
                     except Exception:
-                        console.print("Failed to derive Rs from |Z| and Theta", style="red")
+                        console.print("Failed to derive Xs from |Z| and Theta", style="red")
                         return None
-                if ph is None or rs_vals_raw is None:
-                    console.print("Missing Phase or Rs for 2-channel D5 pipeline", style="red")
+                if ph is None or xs_vals_raw is None:
+                    console.print("Missing Phase or Xs for 2-channel pipeline", style="red")
                     return None
-                rsr = resample_to_length(rs_vals_raw, target_len)
-                # Order: [phase, rs]
+                xsr = resample_to_length(xs_vals_raw, target_len)
+                # Order: [phase, xs]
                 features.extend(ph.tolist())
-                features.extend(rsr.tolist())
-                console.print("Assembled 2-channel D5 features: phase, rs(Xs fallback)", style="green")
+                features.extend(xsr.tolist())
+                console.print("Assembled 2-channel features: phase, Xs(|Z|*sin(Theta) fallback)", style="green")
             else:
                 # Legacy 4-channel pipeline: Return Loss, Phase, Xs, Rs
                 xs_col = None
