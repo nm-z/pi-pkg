@@ -456,8 +456,8 @@ class LiveVnaInference:
             except Exception as _e:
                 console.print(f"Failed to sanitize input array: {_e}", style="yellow")
 
-            # Apply preprocessing pipeline (same as training)
-            # Apply preprocessing in training order with shape-safety checks (scaler -> kbest)
+            # Apply preprocessing pipeline (same as training): scaler -> kbest
+            # Enforce order: first scaler (expects 20002 for D5), then KBest to final_dim
             x_pre = x_sample
             # Scaler
             if self.scaler is not None:
@@ -811,13 +811,28 @@ class LiveVnaInference:
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
             elif channels_expected == 2:
-                # Two-channel pipeline: [s11_db, phase]
-                if rl is None or ph is None:
-                    console.print("Missing RL or Phase for 2-channel pipeline", style="red")
+                # Two-channel pipeline for D5: [phase, rs] where rs fallback to Xs if Rs missing
+                # Phase already prepared as 'ph'
+                rs_col = None
+                for col in vna_df.columns:
+                    if col.lower() == 'rs' or 'resistance' in col.lower():
+                        rs_col = col
+                        break
+                if rs_col is None:
+                    # fallback to Xs
+                    for col in vna_df.columns:
+                        if col.lower() == 'xs' or 'reactance' in col.lower():
+                            rs_col = col
+                            break
+                if ph is None or rs_col is None:
+                    console.print("Missing Phase or Rs/Xs for 2-channel D5 pipeline", style="red")
                     return None
-                features.extend(rl.tolist())
+                rs_vals = vna_df[rs_col].values
+                rsr = resample_to_length(rs_vals, target_len)
+                # Order: [phase, rs]
                 features.extend(ph.tolist())
-                console.print("Assembled 2-channel features: RL, phase", style="green")
+                features.extend(rsr.tolist())
+                console.print("Assembled 2-channel D5 features: phase, rs(Xs fallback)", style="green")
             else:
                 # Legacy 4-channel pipeline: Return Loss, Phase, Xs, Rs
                 xs_col = None
@@ -928,10 +943,20 @@ class LiveVnaInference:
                 f"\nError (pred - ref): {diff:+.2f}°C"
                 f"\nAbs Error: {abs_err:.2f}°C (≤0.5°C: {within_half})"
             )
+        # Show trained model params if available
+        model_desc = "Hold5 CustomResNet"
+        try:
+            if self.model_params is not None:
+                nb = self.model_params.get('num_blocks', None)
+                hd = self.model_params.get('hidden_dim', None)
+                if nb is not None and hd is not None:
+                    model_desc = f"CustomResNet ({nb} residual blocks, {hd} hidden dim)"
+        except Exception:
+            pass
         results_text = f"""
 File: {filename}
 Temperature Prediction: {prediction:.2f}°C
-Model: Hold5 CustomResNet (2 residual blocks, 128 hidden dim)
+Model: {model_desc}
 Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
 {extra}
         """
