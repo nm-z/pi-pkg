@@ -449,18 +449,8 @@ class LiveVnaInference:
                 console.print(f"Failed to sanitize input array: {_e}", style="yellow")
 
             # Apply preprocessing pipeline (same as training)
-            # Apply preprocessing in training order with shape-safety checks
+            # Apply preprocessing in training order with shape-safety checks (scaler -> kbest)
             x_pre = x_sample
-            # VarianceThreshold
-            if self.var_threshold is not None:
-                try:
-                    vt_in = getattr(self.var_threshold, 'n_features_in_', x_pre.shape[1])
-                    if int(vt_in) == int(x_pre.shape[1]):
-                        x_pre = self.var_threshold.transform(x_pre)
-                    else:
-                        console.print(f"Skipping VarianceThreshold: expects {vt_in} features but have {x_pre.shape[1]}", style="yellow")
-                except Exception as _e:
-                    console.print(f"VarianceThreshold transform failed ({_e}); skipping", style="yellow")
             # Scaler
             if self.scaler is not None:
                 try:
@@ -496,7 +486,7 @@ class LiveVnaInference:
                 console.print(f"Failed to compute x_kbest stats: {_e}", style="yellow")
             
             # Scaler already applied above if present
-            x_scaled = x_kbest if self.scaler is not None else self.scaler.transform(x_kbest)
+            x_scaled = x_kbest
             try:
                 _xs = np.asarray(x_scaled)
                 console.print(
