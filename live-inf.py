@@ -772,6 +772,32 @@ class LiveVnaInference:
                 x_old = np.linspace(0.0, 1.0, num=arr.size, endpoint=True)
                 x_new = np.linspace(0.0, 1.0, num=target, endpoint=True)
                 return np.interp(x_new, x_old, arr.astype(float)).astype(np.float32)
+
+            def column_to_numeric(col_name: str) -> np.ndarray:
+                """Convert a VNA column to a numeric numpy array with robust handling:
+                - Coerce non-numeric entries (e.g., '-', '?') to NaN
+                - Linearly interpolate internal NaNs from neighboring finite values
+                - Fill leading/trailing NaNs with nearest finite values
+                Returns float64 array.
+                """
+                try:
+                    vals = pd.to_numeric(vna_df[col_name], errors='coerce').to_numpy(dtype=float)
+                except Exception:
+                    vals = pd.to_numeric(vna_df[col_name], errors='coerce').astype(float).to_numpy()
+                if vals.size == 0:
+                    return vals
+                finite_mask = np.isfinite(vals)
+                if not finite_mask.any():
+                    return vals
+                # Fill internal NaNs via interpolation on original index
+                idx = np.arange(vals.size, dtype=float)
+                try:
+                    vals = np.interp(idx, idx[finite_mask], vals[finite_mask])
+                except Exception:
+                    # Fallback: constant fill with first finite value
+                    first = vals[finite_mask][0]
+                    vals = np.full_like(idx, float(first))
+                return vals
             
             # Show all available columns for debugging
             console.print(f"Available columns: {list(vna_df.columns)}", style="cyan")
@@ -800,7 +826,7 @@ class LiveVnaInference:
                 if return_loss_col is None:
                     console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
                     return None
-                return_loss = vna_df[return_loss_col].values
+                return_loss = column_to_numeric(return_loss_col)
                 rl = resample_to_length(return_loss, target_len)
                 console.print(f"Prepared {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
             
@@ -823,7 +849,7 @@ class LiveVnaInference:
             
             ph = None
             if phase_col:
-                phase = vna_df[phase_col].values
+                phase = column_to_numeric(phase_col)
                 ph = resample_to_length(phase, target_len)
                 console.print(f"Prepared {len(ph)} Phase features from column '{phase_col}' (resampled)", style="green")
             else:
@@ -895,7 +921,7 @@ class LiveVnaInference:
                 features.extend(s11r.tolist())           # s11_db
                 features.extend(s11r.tolist())           # db (duplicate of s11_db)
                 features.extend(phr.tolist())            # phase
-                xs = vna_df[xs_col].values
+                xs = column_to_numeric(xs_col)
                 xsr = resample_to_length(xs, target_len)
                 features.extend(xsr.tolist())            # Xs
                 console.print("Assembled 4-channel features in order: s11_db, db(dup), phase, Xs", style="green")
@@ -913,7 +939,7 @@ class LiveVnaInference:
                             mag_col = col
                             break
                 if mag_col is not None:
-                    arr = vna_df[mag_col].values
+                    arr = column_to_numeric(mag_col)
                     mr = resample_to_length(arr, target_len)
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} third-channel features from column '{mag_col}' (resampled)", style="green")
@@ -928,8 +954,8 @@ class LiveVnaInference:
                     if rs_col is None or xs_col is None:
                         console.print("Missing both |Z|/SWR and Rs/Xs for fallback magnitude", style="red")
                         return None
-                    rs = vna_df[rs_col].values.astype(float)
-                    xs = vna_df[xs_col].values.astype(float)
+                    rs = column_to_numeric(rs_col)
+                    xs = column_to_numeric(xs_col)
                     mag = np.sqrt(np.square(rs) + np.square(xs))
                     mr = resample_to_length(mag, target_len)
                     features.extend(mr.tolist())
@@ -992,10 +1018,10 @@ class LiveVnaInference:
                 if xs_col is None or rs_col is None:
                     console.print("Missing Xs or Rs column for legacy 4-channel pipeline", style="red")
                     return None
-                xs = vna_df[xs_col].values
+                xs = column_to_numeric(xs_col)
                 xsr = resample_to_length(xs, target_len)
                 features.extend(xsr.tolist())
-                rs = vna_df[rs_col].values
+                rs = column_to_numeric(rs_col)
                 rsr = resample_to_length(rs, target_len)
                 features.extend(rsr.tolist())
                 console.print("Assembled legacy 4-channel features: RL, phase, Xs, Rs", style="green")
