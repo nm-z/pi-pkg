@@ -92,6 +92,7 @@ class LiveVnaInference:
         self.last_prediction = None
         self.prediction_count = 0
         self.vna_process = None
+        self.vna_driver_port = "ttyUSB0"
 
         # Model components
         self.model = None
@@ -394,6 +395,11 @@ class LiveVnaInference:
             return False
 
         try:
+            # Detect VNA serial port if default not present
+            detected_port = self.detect_vna_port()
+            if detected_port and detected_port != self.vna_driver_port:
+                console.print(f"Detected VNA serial port: {detected_port}", style="cyan")
+                self.vna_driver_port = detected_port
             # Start VNAhl with the correct Java command and parameters
                 # Adjusted frequency range and steps; steps are configurable for latency/accuracy
             cmd = [
@@ -409,7 +415,7 @@ class LiveVnaInference:
                 "-DexportDirectory=vna-live",
                 "-DexportFilename=live-vna{0,date,yyMMdd}_{0,time,HHmmss}",
                 "-Dscanmode=REFL",
-                "-DdriverPort=ttyUSB0",
+                f"-DdriverPort={self.vna_driver_port}",
                 "-DkeepGeneratorOn",
                 "-jar", self.vna_jar_path
             ]
@@ -429,6 +435,38 @@ class LiveVnaInference:
         except Exception as e:
             console.print(f"Error starting VNAhl: {e}", style="red")
             return False
+
+    def detect_vna_port(self) -> str | None:
+        """Detect miniVNA Tiny serial port.
+        Preference order:
+        - /dev/serial/by-id entries containing 'vna' or 'tiny'
+        - First existing /dev/ttyUSB{0..7}
+        Returns basename (e.g., 'ttyUSB1') for -DdriverPort compatibility.
+        """
+        try:
+            by_id_dir = "/dev/serial/by-id"
+            if os.path.isdir(by_id_dir):
+                candidates: list[str] = []
+                for entry in os.listdir(by_id_dir):
+                    lower = entry.lower()
+                    if "vna" in lower or "tiny" in lower:
+                        candidates.append(os.path.join(by_id_dir, entry))
+                for link in candidates:
+                    try:
+                        real = os.path.realpath(link)
+                        base = os.path.basename(real)
+                        if base.startswith("ttyUSB") and os.path.exists(real):
+                            return base
+                    except Exception:
+                        continue
+            # Fallback: first present ttyUSB*
+            for idx in range(0, 8):
+                dev = f"/dev/ttyUSB{idx}"
+                if os.path.exists(dev):
+                    return os.path.basename(dev)
+        except Exception:
+            pass
+        return None
 
     def stop_vna_capture(self):
         """Stop VNAhl Java application."""
