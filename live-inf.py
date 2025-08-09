@@ -752,7 +752,7 @@ class LiveVnaInference:
                 return None
             
             # Determine expected channels from scaler
-            channels_expected = 3 if use_three_channels else 4
+            channels_expected = num_channels
             if channels_expected == 4:
                 # Inference-ready 4-channel training order: [s11_db, db, phase, Xs]
                 # db is a duplicate of s11_db when separate column isn't available
@@ -841,7 +841,7 @@ class LiveVnaInference:
                 features.extend(rsr.tolist())
                 console.print("Assembled legacy 4-channel features: RL, phase, Xs, Rs", style="green")
             
-            console.print(f"Total features extracted: {len(features)} (channels={num_channels}, points={target_len})", style="green")
+            console.print(f"Total features extracted: {len(features)} (channels={channels_expected}, points={target_len})", style="green")
             return features
             
         except Exception as e:
