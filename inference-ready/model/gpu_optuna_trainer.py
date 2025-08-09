@@ -416,7 +416,26 @@ def _print_header(msg: str):
 def _print_kv(key: str, value):
     print(f"- {key}: {value}")
 
-REQUIRED_VNA_COLS = ("s11_db", "db", "phase", "Xs")
+# Dataset configuration
+# D4B: uses 4 channels [s11_db, db, phase, Xs]
+# D5:  uses 2 channels [phase, Rs] but the same temp readings as D4B (copied CSV name)
+DATASET_NAME = 'D5'
+DATASET_CONFIG = {
+    'D4B': {
+        'temp_csv': 'temp_readings-D4B.csv',
+        'vna_dir': 'VNA-D4B',
+        'required_cols': ("s11_db", "db", "phase", "Xs"),
+    },
+    'D5': {
+        'temp_csv': 'temp_readings-D5.csv',
+        'vna_dir': 'VNA-D4B',  # reuse same raw files, select subset cols
+        'required_cols': ("phase", "Rs"),
+    },
+}
+
+REQUIRED_VNA_COLS = DATASET_CONFIG[DATASET_NAME]['required_cols']
+
+_RS_ALIAS_NOTICE_DONE = False
 
 def _collect_vna_raw_arrays(vna_dir: str, required_cols=REQUIRED_VNA_COLS):
     """Collect raw arrays for required VNA columns per file.
@@ -441,10 +460,19 @@ def _collect_vna_raw_arrays(vna_dir: str, required_cols=REQUIRED_VNA_COLS):
         cols = {}
         ok = True
         for c in required_cols:
+            col_name = c
             if c not in df.columns:
-                ok = False
-                break
-            raw = pd.to_numeric(df[c], errors='coerce')
+                # Alias Rs -> Xs if requested and only Xs exists in files
+                if c == 'Rs' and 'Xs' in df.columns:
+                    col_name = 'Xs'
+                    global _RS_ALIAS_NOTICE_DONE
+                    if not _RS_ALIAS_NOTICE_DONE:
+                        print("INFO: 'Rs' column not found; aliasing to 'Xs' from VNA files for D5 dataset")
+                        _RS_ALIAS_NOTICE_DONE = True
+                else:
+                    ok = False
+                    break
+            raw = pd.to_numeric(df[col_name], errors='coerce')
             nan_count = int(raw.isna().sum())
             nan_totals[c] += nan_count
             arr = raw.dropna().to_numpy()
@@ -525,19 +553,34 @@ def _build_dense_features(records, target_len, required_cols=REQUIRED_VNA_COLS):
     _print_kv("dense_X_shape", X.shape)
     return ts_series, X
 
+def _ensure_d5_temp_csv():
+    """Ensure D5 temp CSV exists by copying D4B CSV if needed."""
+    src = Path('temp_readings-D4B.csv')
+    dst = Path('temp_readings-D5.csv')
+    if not dst.exists():
+        if not src.exists():
+            raise FileNotFoundError("Missing temp_readings-D4B.csv to seed D5 temp CSV")
+        shutil.copy2(src, dst)
+        print("Copied temp_readings-D4B.csv -> temp_readings-D5.csv")
+
+
 def load_data():
-    """Build dataset by aligning dense VNA vectors (s11_db||phase||Xs) to nearest temperature readings."""
+    """Build dataset by aligning dense VNA vectors to nearest temperature readings (dataset-aware)."""
     _print_header("Loading data")
-    print("Reading temp CSV: temp_readings-D4B.csv")
-    temp_df = pd.read_csv('temp_readings-D4B.csv')
+    cfg = DATASET_CONFIG[DATASET_NAME]
+    if DATASET_NAME == 'D5':
+        _ensure_d5_temp_csv()
+    print(f"Dataset: {DATASET_NAME}")
+    print(f"Reading temp CSV: {cfg['temp_csv']}")
+    temp_df = pd.read_csv(cfg['temp_csv'])
     temp_df['timestamp'] = pd.to_datetime(temp_df['timestamp'])
     temp_df = temp_df.sort_values('timestamp').reset_index(drop=True)
     _print_kv("temp_rows", len(temp_df))
 
-    vna_dir = 'VNA-D4B'
-    records = _collect_vna_raw_arrays(vna_dir)
-    target_len = _determine_target_len(records)
-    vna_timestamps, X_dense = _build_dense_features(records, target_len)
+    vna_dir = cfg['vna_dir']
+    records = _collect_vna_raw_arrays(vna_dir, required_cols=cfg['required_cols'])
+    target_len = _determine_target_len(records, required_cols=cfg['required_cols'])
+    vna_timestamps, X_dense = _build_dense_features(records, target_len, required_cols=cfg['required_cols'])
 
     print("Aligning VNA to temperature readings (tolerance=15 min)")
     vna_df = pd.DataFrame({'timestamp': vna_timestamps})
@@ -560,6 +603,16 @@ def load_data():
     _print_kv("final_y_len", y.shape[0])
     return X, y
 
+def split_train_val_holdout(X: np.ndarray, y: np.ndarray, seed: int = 42):
+    """70% train, 15% val (Optuna/CV), 15% holdout."""
+    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.30, random_state=seed)
+    X_val, X_holdout, y_val, y_holdout = train_test_split(X_temp, y_temp, test_size=0.50, random_state=seed)
+    _print_header("Dataset split")
+    _print_kv("train_shape", X_train.shape)
+    _print_kv("val_shape", X_val.shape)
+    _print_kv("holdout_shape", X_holdout.shape)
+    return X_train, X_val, X_holdout, y_train, y_val, y_holdout
+
 def build_preprocess_pipeline(trial, num_features):
     """Build a sklearn Pipeline with optional steps controlled by Optuna."""
     steps = []
@@ -577,7 +630,7 @@ def build_preprocess_pipeline(trial, num_features):
     print("Preprocessing steps:", [name for name, _ in steps])
     return Pipeline(steps) if steps else None
 
-def objective(trial, X, y):
+def objective(trial, X_train, y_train, X_val, y_val):
     """Optuna objective function"""
     # Hyperparameters
     hidden_dim = trial.suggest_int('hidden_dim', 64, 512, step=64)
@@ -595,11 +648,9 @@ def objective(trial, X, y):
     _print_kv("batch_size", batch_size)
     _print_kv("residual_init", residual_init)
     
-    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
+    X_train_raw, X_test_raw, y_train, y_test = X_train, X_val, y_train, y_val
     _print_kv("X_train_raw_shape", X_train_raw.shape)
-    _print_kv("X_test_raw_shape", X_test_raw.shape)
+    _print_kv("X_val_raw_shape", X_test_raw.shape)
 
     # Preprocess pipeline
     preprocess = build_preprocess_pipeline(trial, num_features=X_train_raw.shape[1])
@@ -753,7 +804,7 @@ def objective(trial, X, y):
     _live_newline()
     return best_r2
 
-def save_inference_artifacts(model, best_params, r2_value, preprocess, X_test_raw, y_test, X_all, y_all):
+def save_inference_artifacts(model, best_params, r2_value, preprocess, X_holdout_raw, y_holdout, X_all, y_all):
     """Save model, params, fitted preprocessing pipeline, and holdout features for inference."""
     _print_header("Saving inference artifacts")
     # Create inference-ready directory
@@ -790,10 +841,10 @@ def save_inference_artifacts(model, best_params, r2_value, preprocess, X_test_ra
                 joblib.dump(step_transformer, 'inference-ready/kbest_selector.pkl')
                 print("Saved SelectKBest -> inference-ready/kbest_selector.pkl")
     
-    # Save holdout test features and targets
-    np.save('inference-ready/X_test_raw.npy', X_test_raw)
-    np.save('inference-ready/y_test.npy', y_test)
-    print("Saved holdout arrays -> inference-ready/X_test_raw.npy, y_test.npy")
+    # Save holdout features and targets for true inference-time evaluation
+    np.save('inference-ready/X_holdout_raw.npy', X_holdout_raw)
+    np.save('inference-ready/y_holdout.npy', y_holdout)
+    print("Saved holdout arrays -> inference-ready/X_holdout_raw.npy, y_holdout.npy")
     
     # Save data statistics for reference (use cached arrays, do not reload)
     data_stats = {
@@ -810,20 +861,19 @@ def save_inference_artifacts(model, best_params, r2_value, preprocess, X_test_ra
     with open('inference-ready/data_stats.json', 'w') as f:
         json.dump(data_stats, f, indent=2)
     print("Saved data stats -> inference-ready/data_stats.json")
-    print(f"Model saved with R² = {r2_value:.6f}")
+    print(f"Model saved with holdout R² = {r2_value:.6f}")
 
-def train_final_model(best_params, X, y):
-    """Train final model with best parameters and fitted preprocessing pipeline."""
+def train_final_model(best_params, X_trainval_raw, y_trainval, X_holdout_raw, y_holdout):
+    """Train final model with best parameters on train+val, evaluate on holdout."""
     _print_header("Final training with best parameters")
     for k, v in best_params.items():
         _print_kv(k, v)
     
-    # Use cached data passed in
-    X_train_raw, X_test_raw, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
-    )
-    _print_kv("X_train_raw_shape", X_train_raw.shape)
-    _print_kv("X_test_raw_shape", X_test_raw.shape)
+    # Use provided train+val as training base
+    X_train_raw = X_trainval_raw
+    y_train = y_trainval
+    _print_kv("X_trainval_raw_shape", X_train_raw.shape)
+    _print_kv("X_holdout_raw_shape", X_holdout_raw.shape)
 
     # Recreate preprocessing pipeline from best_params
     class BestParamsAccessor:
@@ -841,22 +891,27 @@ def train_final_model(best_params, X, y):
 
     if preprocess is not None:
         X_train = preprocess.fit_transform(X_train_raw, y_train)
-        X_test = preprocess.transform(X_test_raw)
+        X_holdout = preprocess.transform(X_holdout_raw)
     else:
-        X_train, X_test = X_train_raw, X_test_raw
+        X_train, X_holdout = X_train_raw, X_holdout_raw
     _print_kv("X_train_shape", X_train.shape)
-    _print_kv("X_test_shape", X_test.shape)
+    _print_kv("X_holdout_shape", X_holdout.shape)
 
     input_dim = X_train.shape[1]
     _print_kv("input_dim", input_dim)
 
-    # Create datasets and loaders
-    train_dataset = TemperatureDataset(X_train, y_train)
-    test_dataset = TemperatureDataset(X_test, y_test)
+    # Create datasets and loaders (monitor with a small internal split from train)
+    # Keep 10% of training as internal eval for live metrics/early stopping
+    n_train = X_train.shape[0]
+    split_idx = max(1, int(0.9 * n_train))
+    X_tr_int, X_ev_int = X_train[:split_idx], X_train[split_idx:]
+    y_tr_int, y_ev_int = y_train[:split_idx], y_train[split_idx:]
+    train_dataset = TemperatureDataset(X_tr_int, y_tr_int)
+    test_dataset = TemperatureDataset(X_ev_int, y_ev_int)
     
     use_cached = False
     try:
-        est_bytes = X_train.nbytes + y_train.nbytes + X_test.nbytes + y_test.nbytes
+        est_bytes = X_train.nbytes + y_train.nbytes + X_ev_int.nbytes + y_ev_int.nbytes
         if est_bytes < (12 * 1024**3 - 2 * 1024**3):
             use_cached = CACHE_ON_GPU
     except Exception:
@@ -865,7 +920,7 @@ def train_final_model(best_params, X, y):
 
     if use_cached:
         X_train_t, y_train_t = _cache_arrays_to_gpu(X_train, y_train, device)
-        X_test_t, y_test_t = _cache_arrays_to_gpu(X_test, y_test, device)
+        X_test_t, y_test_t = _cache_arrays_to_gpu(X_ev_int, y_ev_int, device)
         effective_bs = max(256, best_params['batch_size'])
         _print_kv("effective_batch_size", effective_bs)
     else:
@@ -953,8 +1008,8 @@ def train_final_model(best_params, X, y):
                 all_targets = []
                 with torch.no_grad():
                     for batch_start in range(0, len(test_dataset), effective_bs):
-                        batch_X = torch.as_tensor(X_test[batch_start:batch_start+effective_bs], device=device)
-                        batch_y = torch.as_tensor(y_test[batch_start:batch_start+effective_bs], device=device)
+                        batch_X = torch.as_tensor(X_ev_int[batch_start:batch_start+effective_bs], device=device)
+                        batch_y = torch.as_tensor(y_ev_int[batch_start:batch_start+effective_bs], device=device)
                         with torch.autocast(device_type='cuda', dtype=torch.float16, enabled=USE_AMP):
                             outputs = model(batch_X)
                         all_preds.extend(outputs.float().cpu().numpy())
@@ -964,7 +1019,7 @@ def train_final_model(best_params, X, y):
                 r2_skl, _ = r2_both(targets_t, preds_t)
                 r2 = r2_skl
 
-            _live_update(f"Final train | epoch={epoch:04d} | train_loss={avg_train_loss:.6f} | val_R2={r2:.6f} | bs={effective_bs}")
+            _live_update(f"Final train | epoch={epoch:04d} | train_loss={avg_train_loss:.6f} | int_val_R2={r2:.6f} | bs={effective_bs}")
             if r2 > best_r2:
                 best_r2 = r2
                 best_model_state = model.state_dict().copy()
@@ -981,8 +1036,17 @@ def train_final_model(best_params, X, y):
     
     # Load best model
     model.load_state_dict(best_model_state)
-    
-    return model, best_r2, (last_preds, last_targets), preprocess, X_test_raw, y_test
+
+    # Evaluate on true holdout (once, no training impact)
+    model.eval()
+    with torch.no_grad():
+        Xh_t = torch.as_tensor(X_holdout, dtype=torch.float32, device=device)
+        yh_t = torch.as_tensor(y_holdout, dtype=torch.float32, device=device)
+        preds_h = model(Xh_t)
+    r2_holdout, _ = r2_both(yh_t, preds_h)
+    _print_kv("holdout_R2", r2_holdout)
+
+    return model, r2_holdout, (last_preds, last_targets), preprocess, X_holdout_raw, y_holdout
 
 def main():
     """Main training pipeline"""
@@ -991,6 +1055,7 @@ def main():
     
     # Cache dataset once to avoid re-processing per trial
     X, y = load_data()
+    X_train, X_val, X_holdout, y_train, y_val, y_holdout = split_train_val_holdout(X, y)
     
     # Create study
     study = optuna.create_study(
@@ -999,7 +1064,7 @@ def main():
     )
     
     # Optimize with cached X, y
-    study.optimize(lambda trial: objective(trial, X, y), n_trials=50, timeout=3600, show_progress_bar=True)
+    study.optimize(lambda trial: objective(trial, X_train, y_train, X_val, y_val), n_trials=50, timeout=3600, show_progress_bar=True)
 
     # Save trials history
     try:
@@ -1013,10 +1078,13 @@ def main():
     print(f"Best parameters: {study.best_params}")
     
     # Train final model with cached arrays
-    model, final_r2, (preds, targets), preprocess, X_test_raw, y_test = train_final_model(study.best_params, X, y)
-    
-    # Save artifacts using cached arrays for stats
-    save_inference_artifacts(model, study.best_params, final_r2, preprocess, X_test_raw, y_test, X, y)
+    # Train final model on train+val, test on holdout
+    X_trainval = np.concatenate([X_train, X_val], axis=0)
+    y_trainval = np.concatenate([y_train, y_val], axis=0)
+    model, final_r2, (preds, targets), preprocess, X_holdout_raw, y_holdout_arr = train_final_model(study.best_params, X_trainval, y_trainval, X_holdout, y_holdout)
+
+    # Save artifacts using cached arrays for stats and holdout
+    save_inference_artifacts(model, study.best_params, final_r2, preprocess, X_holdout_raw, y_holdout_arr, X, y)
     
     print("Training complete!")
     print(f"Final R²: {final_r2:.6f}")

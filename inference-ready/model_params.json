@@ -1,12 +1,12 @@
 {
-  "hidden_dim": 512,
-  "num_blocks": 6,
-  "dropout": 0.0007886227749111161,
-  "lr": 2.6486818273938276e-05,
-  "batch_size": 64,
-  "residual_init": 1.9982294565380805,
+  "hidden_dim": 320,
+  "num_blocks": 4,
+  "dropout": 0.01906750508580709,
+  "lr": 8.569331925053983e-05,
+  "batch_size": 256,
+  "residual_init": 0.9444298503238986,
   "use_variance_threshold": false,
   "use_standard_scaler": true,
   "use_select_kbest": true,
-  "kbest_k": 12398
+  "kbest_k": 10456
 }

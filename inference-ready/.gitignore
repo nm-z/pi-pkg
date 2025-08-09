@@ -1,1 +1,5 @@
-X_test_raw.npy
+# Ignore large arrays
+X_*\.npy
+y_*\.npy
+X_test_raw\.npy
+y_test\.npy
