@@ -102,6 +102,7 @@ class LiveVnaInference:
         self.hw_points = int(hw_points)
         # Model expects features built from 4 columns × 10,001 points
         self.model_points = 10001
+        # Expected raw features will be fixed after scaler is loaded (n_features_in_)
         self.expected_raw_features = 4 * self.model_points
         # Arduino config
         self.read_arduino = bool(read_arduino)
@@ -154,6 +155,13 @@ class LiveVnaInference:
                         "with_mean": getattr(self.scaler, "with_mean", None),
                         "with_std": getattr(self.scaler, "with_std", None),
                     }
+                    # Adjust expected_raw_features to match scaler input size when it's a clean multiple of model_points
+                    try:
+                        n_in = int(getattr(self.scaler, "n_features_in_", 0))
+                        if n_in > 0 and n_in % self.model_points == 0:
+                            self.expected_raw_features = n_in
+                    except Exception:
+                        pass
                     mean_attr = getattr(self.scaler, "mean_", None)
                     scale_attr = getattr(self.scaler, "scale_", None)
                     if mean_attr is not None and hasattr(mean_attr, "shape"):
