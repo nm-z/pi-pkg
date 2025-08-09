@@ -597,10 +597,10 @@ class LiveVnaInference:
             return prediction
 
     def read_arduino_temp(self, port: str | None = None, baud: int | None = None, timeout: float = 2.0):
-        """Read one temperature value from Arduino using temp.py behavior.
-        - Scan /dev/ttyACM*
-        - 4s settle, CRLF writes, read 3 lines, return last parsed float.
-        - No background read interference.
+        """Read one temperature value from Arduino using robust accumulation.
+        - Scan /dev/ttyACM* (and safe /dev/ttyUSB*) and /dev/serial/by-id
+        - 4s settle, send CRLF, accumulate bytes and parse last float; tolerate CR-only lines/timeouts
+        - No background reader
         """
         if not self.read_arduino:
             return None
@@ -640,24 +640,35 @@ class LiveVnaInference:
                     write_timeout=1,
                 )  # type: ignore
                 time.sleep(4.0)
-                try:
-                    ser.reset_input_buffer()
-                except Exception:
-                    pass
-                for _ in range(3):
+                try: ser.reset_input_buffer()
+                except Exception: pass
+                # Up to 2 attempts
+                for _ in range(2):
+                    try:
+                        ser.reset_input_buffer()
+                    except Exception:
+                        pass
                     ser.write(b'TEMP\r\n')
                     ser.flush()
-                    line = ser.read_until(b'\n').decode('utf-8', 'ignore').strip()
-                    try:
-                        last_val = float(line)
-                    except Exception:
-                        m = self.temp_regex.search(line)
-                        if m:
-                            try:
-                                last_val = float(m.group(1))
-                            except Exception:
-                                continue
-                    time.sleep(0.3)
+                    buf = bytearray()
+                    deadline = time.time() + float(timeout)
+                    while time.time() < deadline:
+                        chunk = ser.read(64)
+                        if chunk:
+                            buf.extend(chunk)
+                            text = buf.replace(b"\r", b"\n").decode('utf-8', 'ignore')
+                            # parse last float seen
+                            nums = [m.group(0) for m in re.finditer(r"-?\d+(?:\.\d+)?", text)]
+                            if nums:
+                                try:
+                                    last_val = float(nums[-1])
+                                except Exception:
+                                    last_val = None
+                        else:
+                            # brief pause before next read
+                            time.sleep(0.05)
+                    if last_val is not None:
+                        break
                 if last_val is not None and -40.0 <= last_val <= 200.0:
                     self.latest_arduino_temp = float(last_val)
                     return float(last_val)
