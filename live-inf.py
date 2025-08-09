@@ -417,10 +417,9 @@ class LiveVnaInference:
             console.print(f"Starting VNAhl: {' '.join(cmd)}", style="blue")
             
             # Start VNA process
+            # Inherit parent's stdout/stderr to stream all Java output live
             self.vna_process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 cwd=str(Path.cwd())
             )
             
