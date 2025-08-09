@@ -63,8 +63,27 @@ class VNADataHandler(FileSystemEventHandler):
             self.processed_files.add(str(file_path))
             console.print(f"[green]New VNA data detected: {file_path.name}[/green]")
 
-            # Wait a moment for file to be fully written
-            time.sleep(1)
+            # Wait until the CSV is fully written: poll size until stable
+            try:
+                prev_size = -1
+                stable_count = 0
+                start_wait = time.time()
+                while True:
+                    cur_size = file_path.stat().st_size if file_path.exists() else -1
+                    if cur_size > 0 and cur_size == prev_size:
+                        stable_count += 1
+                    else:
+                        stable_count = 0
+                    prev_size = cur_size
+                    if stable_count >= 4:  # ~2s stable at 0.5s interval
+                        break
+                    if time.time() - start_wait > 180:  # 3 minute safety
+                        console.print(f"[yellow]Timeout waiting for file to finish writing: {file_path.name}[/yellow]")
+                        break
+                    time.sleep(0.5)
+            except Exception:
+                # Best-effort; proceed regardless
+                time.sleep(1)
 
             # Process the VNA data
             threading.Thread(
