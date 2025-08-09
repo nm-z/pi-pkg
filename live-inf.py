@@ -948,10 +948,7 @@ class LiveVnaInference:
             
             console.print(f"Loaded VNA data: {vna_df.shape}", style="green")
             
-            # Validate capture to skip degenerate frames (open/short-like)
-            if not self._is_valid_capture(vna_df):
-                console.print("Capture considered degenerate (open/short-like or invalid); skipping prediction", style="yellow")
-                return
+            # Proceed with inference regardless of capture shape per D5 requirement
             
             # Extract features
             features = self.extract_vna_features(vna_df)
