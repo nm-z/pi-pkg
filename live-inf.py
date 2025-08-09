@@ -711,32 +711,32 @@ class LiveVnaInference:
             console.print(f"Available columns: {list(vna_df.columns)}", style="cyan")
             
             # Try different possible column names for Return Loss (support: s11_db, db, etc.)
-            return_loss_col = None
-            preferred_aliases = {
-                's11_db', 's11db', 'returnloss', 'return_loss', 'returnlosdb', 'returnlossdb', 'db'
-            }
-            for col in vna_df.columns:
-                lower_col = col.lower()
-                normalized = re.sub(r"[^a-z0-9]+", "", lower_col)
-                if (
-                    'return' in lower_col or
-                    'loss' in lower_col or
-                    's11' in lower_col or
-                    normalized in preferred_aliases or
-                    lower_col == 'db' or
-                    lower_col.endswith('(db)')
-                ):
-                    return_loss_col = col
-                    break
-            
+            # Only required for 3- or 4-channel pipelines; skip for 2-channel D5
             rl = None
-            if return_loss_col:
+            if num_channels != 2:
+                return_loss_col = None
+                preferred_aliases = {
+                    's11_db', 's11db', 'returnloss', 'return_loss', 'returnlosdb', 'returnlossdb', 'db'
+                }
+                for col in vna_df.columns:
+                    lower_col = col.lower()
+                    normalized = re.sub(r"[^a-z0-9]+", "", lower_col)
+                    if (
+                        'return' in lower_col or
+                        'loss' in lower_col or
+                        's11' in lower_col or
+                        normalized in preferred_aliases or
+                        lower_col == 'db' or
+                        lower_col.endswith('(db)')
+                    ):
+                        return_loss_col = col
+                        break
+                if return_loss_col is None:
+                    console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
+                    return None
                 return_loss = vna_df[return_loss_col].values
                 rl = resample_to_length(return_loss, target_len)
                 console.print(f"Prepared {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
-            else:
-                console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
-                return None
             
             # Try different possible column names for Phase (prefer RP (°) if present)
             phase_col = None
@@ -766,6 +766,51 @@ class LiveVnaInference:
             
             # Determine expected channels from scaler
             channels_expected = num_channels
+            # If exactly 2 channels expected, immediately assemble [phase, rs]
+            if channels_expected == 2:
+                rs_vals_raw = None
+                rs_col = next((c for c in vna_df.columns if c.lower() == 'rs' or 'resistance' in c.lower()), None)
+                if rs_col is not None:
+                    try:
+                        rs_vals_raw = pd.to_numeric(vna_df[rs_col], errors='coerce').to_numpy()
+                    except Exception:
+                        rs_vals_raw = None
+                # If Rs missing or near-constant, derive from |Z| and Theta when available
+                derive_from_zt = False
+                if rs_vals_raw is None or not np.isfinite(rs_vals_raw).any():
+                    derive_from_zt = True
+                else:
+                    try:
+                        rs_std = float(np.nanstd(rs_vals_raw))
+                        if rs_std < 1e-6:
+                            derive_from_zt = True
+                    except Exception:
+                        derive_from_zt = True
+                if derive_from_zt:
+                    z_col = next((c for c in vna_df.columns if c.strip().lower() in {'|z|', 'z', 'mag', 'magnitude'} or '|z|' in c.lower()), None)
+                    th_col = next((c for c in vna_df.columns if c.strip().lower() == 'theta'), None)
+                    if z_col is None or th_col is None:
+                        console.print("Cannot derive Rs: missing |Z| or Theta columns", style="red")
+                        return None
+                    try:
+                        z_vals = pd.to_numeric(vna_df[z_col], errors='coerce').to_numpy(dtype=float)
+                        th_vals_deg = pd.to_numeric(vna_df[th_col], errors='coerce').to_numpy(dtype=float)
+                        th_rad = np.deg2rad(th_vals_deg)
+                        rs_vals_raw = z_vals * np.cos(th_rad)
+                    except Exception:
+                        console.print("Failed to derive Rs from |Z| and Theta", style="red")
+                        return None
+                if ph is None or rs_vals_raw is None:
+                    console.print("Missing Phase or Rs for 2-channel D5 pipeline", style="red")
+                    return None
+                rsr = resample_to_length(rs_vals_raw, target_len)
+                # Order: [phase, rs]
+                features.extend(ph.tolist())
+                features.extend(rsr.tolist())
+                console.print("Assembled 2-channel D5 features: phase, rs(Xs fallback)", style="green")
+                console.print(f"Total features extracted: {len(features)} (channels={channels_expected}, points={target_len})", style="green")
+                return features
+
             if channels_expected == 4:
                 # Inference-ready 4-channel training order: [s11_db, db, phase, Xs]
                 # db is a duplicate of s11_db when separate column isn't available
