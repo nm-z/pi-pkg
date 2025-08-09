@@ -203,3 +203,5 @@ scripts/*.bin
 firmware/**/*.bin
 firmware/**/*.o
 api/**/*.bin 
+
+.cursor/rules/
