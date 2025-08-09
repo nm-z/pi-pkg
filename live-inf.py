@@ -744,294 +744,58 @@ class LiveVnaInference:
         return None
 
     def extract_vna_features(self, vna_df):
-        """Extract features from VNA data.
-        - Legacy: 4 channels (Return Loss, Phase, Xs, Rs) -> 40004 features
-        - Inference-ready: 3 channels (Return Loss, Phase, |Z|) -> 30003 features
+        """Strict feature extraction: exactly [Phase(deg), Xs] across model_points.
+        Exits the program on any missing/invalid requirement; only NaN handling is applied.
         """
         try:
-            # Determine target channels based on scaler-reported expected input
-            use_three_channels = False
-            num_channels = 4
-            try:
-                n_in = int(getattr(self.scaler, 'n_features_in_', 0))
-                if n_in > 0 and (n_in % self.model_points) == 0:
-                    channels_expected = n_in // self.model_points
-                    if channels_expected in (2, 3, 4):
-                        num_channels = channels_expected
-                        use_three_channels = (channels_expected == 3)
-            except Exception:
-                pass
-            # Extract raw values from selected channels (NOT frequency)
-            features = []
             target_len = self.model_points
 
-            def resample_to_length(arr: np.ndarray, target: int) -> np.ndarray:
-                if arr.size == target:
-                    return arr.astype(np.float32, copy=False)
-                # Robust linear interpolation on normalized index
-                x_old = np.linspace(0.0, 1.0, num=arr.size, endpoint=True)
-                x_new = np.linspace(0.0, 1.0, num=target, endpoint=True)
-                return np.interp(x_new, x_old, arr.astype(float)).astype(np.float32)
-
             def column_to_numeric(col_name: str) -> np.ndarray:
-                """Convert a VNA column to a numeric numpy array with robust handling:
-                - Coerce non-numeric entries (e.g., '-', '?') to NaN
-                - Linearly interpolate internal NaNs from neighboring finite values
-                - Fill leading/trailing NaNs with nearest finite values
-                Returns float64 array.
-                """
-                try:
-                    vals = pd.to_numeric(vna_df[col_name], errors='coerce').to_numpy(dtype=float)
-                except Exception:
-                    vals = pd.to_numeric(vna_df[col_name], errors='coerce').astype(float).to_numpy()
+                vals = pd.to_numeric(vna_df[col_name], errors='coerce').to_numpy(dtype=float)
                 if vals.size == 0:
                     return vals
                 finite_mask = np.isfinite(vals)
                 if not finite_mask.any():
                     return vals
-                # Fill internal NaNs via interpolation on original index
                 idx = np.arange(vals.size, dtype=float)
-                try:
-                    vals = np.interp(idx, idx[finite_mask], vals[finite_mask])
-                except Exception:
-                    # Fallback: constant fill with first finite value
-                    first = vals[finite_mask][0]
-                    vals = np.full_like(idx, float(first))
+                vals = np.interp(idx, idx[finite_mask], vals[finite_mask])
                 return vals
-            
-            # Show all available columns for debugging
-            console.print(f"Available columns: {list(vna_df.columns)}", style="cyan")
-            
-            # Try different possible column names for Return Loss (support: s11_db, db, etc.)
-            # Only required for 3- or 4-channel pipelines; skip for 2-channel D5
-            rl = None
-            if num_channels != 2:
-                return_loss_col = None
-                preferred_aliases = {
-                    's11_db', 's11db', 'returnloss', 'return_loss', 'returnlosdb', 'returnlossdb', 'db'
-                }
-                for col in vna_df.columns:
-                    lower_col = col.lower()
-                    normalized = re.sub(r"[^a-z0-9]+", "", lower_col)
-                    if (
-                        'return' in lower_col or
-                        'loss' in lower_col or
-                        's11' in lower_col or
-                        normalized in preferred_aliases or
-                        lower_col == 'db' or
-                        lower_col.endswith('(db)')
-                    ):
-                        return_loss_col = col
-                        break
-                if return_loss_col is None:
-                    console.print("Missing Return Loss column - tried: return, loss, s11", style="red")
-                    return None
-                return_loss = column_to_numeric(return_loss_col)
-                rl = resample_to_length(return_loss, target_len)
-                console.print(f"Prepared {len(rl)} Return Loss features from column '{return_loss_col}' (resampled)", style="green")
-            
-            # Try different possible column names for Phase (prefer RP (°) if present)
-            phase_col = None
-            # Strong preference list
-            preferred_phase = [
-                'rp (°)', 'rp(°)', 'rp', 'theta', 'phase(deg)', 'phase (deg)', 'phase'
-            ]
-            lower_map = {col.lower().strip(): col for col in vna_df.columns}
-            for key in preferred_phase:
-                if key in lower_map:
-                    phase_col = lower_map[key]
-                    break
-            if phase_col is None:
-                for col in vna_df.columns:
-                    if 'phase' in col.lower():
-                        phase_col = col
-                        break
-            
-            ph = None
-            if phase_col:
-                phase = column_to_numeric(phase_col)
-                ph = resample_to_length(phase, target_len)
-                console.print(f"Prepared {len(ph)} Phase features from column '{phase_col}' (resampled)", style="green")
-            else:
-                console.print("Missing Phase column", style="red")
-                return None
-            
-            # Determine expected channels from scaler
-            channels_expected = num_channels
-            # If exactly 2 channels expected, immediately assemble [phase, rs]
-            if channels_expected == 2:
-                rs_vals_raw = None
-                rs_col = next((c for c in vna_df.columns if c.lower() == 'rs' or 'resistance' in c.lower()), None)
-                if rs_col is not None:
-                    try:
-                        rs_vals_raw = pd.to_numeric(vna_df[rs_col], errors='coerce').to_numpy()
-                    except Exception:
-                        rs_vals_raw = None
-                # If Rs missing or near-constant, derive from |Z| and Theta when available
-                derive_from_zt = False
-                if rs_vals_raw is None or not np.isfinite(rs_vals_raw).any():
-                    derive_from_zt = True
-                else:
-                    try:
-                        rs_std = float(np.nanstd(rs_vals_raw))
-                        if rs_std < 1e-6:
-                            derive_from_zt = True
-                    except Exception:
-                        derive_from_zt = True
-                if derive_from_zt:
-                    z_col = next((c for c in vna_df.columns if c.strip().lower() in {'|z|', 'z', 'mag', 'magnitude'} or '|z|' in c.lower()), None)
-                    th_col = next((c for c in vna_df.columns if c.strip().lower() == 'theta'), None)
-                    if z_col is None or th_col is None:
-                        console.print("Cannot derive Rs: missing |Z| or Theta columns", style="red")
-                        return None
-                    try:
-                        z_vals = pd.to_numeric(vna_df[z_col], errors='coerce').to_numpy(dtype=float)
-                        th_vals_deg = pd.to_numeric(vna_df[th_col], errors='coerce').to_numpy(dtype=float)
-                        th_rad = np.deg2rad(th_vals_deg)
-                        rs_vals_raw = z_vals * np.cos(th_rad)
-                    except Exception:
-                        console.print("Failed to derive Rs from |Z| and Theta", style="red")
-                        return None
-                if ph is None or rs_vals_raw is None:
-                    console.print("Missing Phase or Rs for 2-channel D5 pipeline", style="red")
-                    return None
-                rsr = resample_to_length(rs_vals_raw, target_len)
-                # Order: [phase, rs]
-                features.extend(ph.tolist())
-                features.extend(rsr.tolist())
-                console.print("Assembled 2-channel D5 features: phase, rs(Xs fallback)", style="green")
-                console.print(f"Total features extracted: {len(features)} (channels={channels_expected}, points={target_len})", style="green")
-                return features
 
-            if channels_expected == 4:
-                # Inference-ready 4-channel training order: [s11_db, db, phase, Xs]
-                # db is a duplicate of s11_db when separate column isn't available
-                # Xs required
-                xs_col = None
-                for col in vna_df.columns:
-                    if col.lower() == 'xs' or 'reactance' in col.lower():
-                        xs_col = col
-                        break
-                if xs_col is None:
-                    console.print("Missing Xs column for 4-channel pipeline", style="red")
-                    return None
-                # Assemble in training order
-                s11r = rl
-                phr = ph
-                features.extend(s11r.tolist())           # s11_db
-                features.extend(s11r.tolist())           # db (duplicate of s11_db)
-                features.extend(phr.tolist())            # phase
-                xs = column_to_numeric(xs_col)
-                xsr = resample_to_length(xs, target_len)
-                features.extend(xsr.tolist())            # Xs
-                console.print("Assembled 4-channel features in order: s11_db, db(dup), phase, Xs", style="green")
-            elif channels_expected == 3:
-                # Third channel preference: |Z| if present, else SWR, else sqrt(Rs^2 + Xs^2)
-                mag_col = None
-                for col in vna_df.columns:
-                    lc = col.lower()
-                    if '|z|' in lc or lc.strip() in ('|z|', 'mag', 'magnitude'):  # common name is '|Z|'
-                        mag_col = col
-                        break
-                if mag_col is None:
-                    for col in vna_df.columns:
-                        if col.lower() == 'swr':
-                            mag_col = col
-                            break
-                if mag_col is not None:
-                    arr = column_to_numeric(mag_col)
-                    mr = resample_to_length(arr, target_len)
-                    features.extend(mr.tolist())
-                    console.print(f"Added {len(mr)} third-channel features from column '{mag_col}' (resampled)", style="green")
-                else:
-                    # Fallback to sqrt(Rs^2 + Xs^2)
-                    rs_col, xs_col = None, None
-                    for col in vna_df.columns:
-                        if rs_col is None and (col.lower() == 'rs' or 'resistance' in col.lower()):
-                            rs_col = col
-                        if xs_col is None and (col.lower() == 'xs' or 'reactance' in col.lower()):
-                            xs_col = col
-                    if rs_col is None or xs_col is None:
-                        console.print("Missing both |Z|/SWR and Rs/Xs for fallback magnitude", style="red")
-                        return None
-                    rs = column_to_numeric(rs_col)
-                    xs = column_to_numeric(xs_col)
-                    mag = np.sqrt(np.square(rs) + np.square(xs))
-                    mr = resample_to_length(mag, target_len)
-                    features.extend(mr.tolist())
-                    console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
-            elif channels_expected == 2:
-                # Two-channel pipeline override: [phase, Xs]. If Xs missing/degenerate, derive Xs = |Z| * sin(Theta).
-                # Phase already prepared as 'ph'
-                xs_vals_raw = None
-                xs_col = next((c for c in vna_df.columns if c.lower() == 'xs' or 'reactance' in c.lower()), None)
-                if xs_col is not None:
-                    try:
-                        xs_vals_raw = column_to_numeric(xs_col)
-                    except Exception:
-                        xs_vals_raw = None
-                # If Xs missing or near-constant, derive from |Z| and Theta when available
-                derive_from_zt = False
-                if xs_vals_raw is None or not np.isfinite(xs_vals_raw).any():
-                    derive_from_zt = True
-                else:
-                    try:
-                        xs_std = float(np.nanstd(xs_vals_raw))
-                        if xs_std < 1e-6:
-                            derive_from_zt = True
-                    except Exception:
-                        derive_from_zt = True
-                if derive_from_zt:
-                    z_col = next((c for c in vna_df.columns if c.strip().lower() in {'|z|', 'z', 'mag', 'magnitude'} or '|z|' in c.lower()), None)
-                    th_col = next((c for c in vna_df.columns if c.strip().lower() == 'theta'), None)
-                    if z_col is None or th_col is None:
-                        console.print("Cannot derive Xs: missing |Z| or Theta columns", style="red")
-                        return None
-                    try:
-                        z_vals = column_to_numeric(z_col)
-                        th_vals_deg = column_to_numeric(th_col)
-                        th_rad = np.deg2rad(th_vals_deg)
-                        xs_vals_raw = z_vals * np.sin(th_rad)
-                    except Exception:
-                        console.print("Failed to derive Xs from |Z| and Theta", style="red")
-                        return None
-                if ph is None or xs_vals_raw is None:
-                    console.print("Missing Phase or Xs for 2-channel pipeline", style="red")
-                    return None
-                xsr = resample_to_length(xs_vals_raw, target_len)
-                # Order: [phase, xs]
-                features.extend(ph.tolist())
-                features.extend(xsr.tolist())
-                console.print("Assembled 2-channel features: phase, Xs(|Z|*sin(Theta) fallback)", style="green")
-            else:
-                # Legacy 4-channel pipeline: Return Loss, Phase, Xs, Rs
-                xs_col = None
-                for col in vna_df.columns:
-                    if col.lower() == 'xs' or 'reactance' in col.lower():
-                        xs_col = col
-                        break
-                rs_col = None
-                for col in vna_df.columns:
-                    if col.lower() == 'rs' or 'resistance' in col.lower():
-                        rs_col = col
-                        break
-                if xs_col is None or rs_col is None:
-                    console.print("Missing Xs or Rs column for legacy 4-channel pipeline", style="red")
-                    return None
-                xs = column_to_numeric(xs_col)
-                xsr = resample_to_length(xs, target_len)
-                features.extend(xsr.tolist())
-                rs = column_to_numeric(rs_col)
-                rsr = resample_to_length(rs, target_len)
-                features.extend(rsr.tolist())
-                console.print("Assembled legacy 4-channel features: RL, phase, Xs, Rs", style="green")
-            
-            console.print(f"Total features extracted: {len(features)} (channels={channels_expected}, points={target_len})", style="green")
+            # Require exact columns
+            if 'Phase(deg)' not in vna_df.columns or 'Xs' not in vna_df.columns:
+                console.print("Missing required columns: need exactly 'Phase(deg)' and 'Xs'", style="red")
+                sys.exit(1)
+
+            phase_vals = column_to_numeric('Phase(deg)')
+            xs_vals = column_to_numeric('Xs')
+
+            if phase_vals.size == 0 or xs_vals.size == 0:
+                console.print("Empty data in required columns 'Phase(deg)' or 'Xs'", style="red")
+                sys.exit(1)
+
+            # Enforce exact sweep length; do not resample
+            if phase_vals.size != target_len or xs_vals.size != target_len:
+                console.print(
+                    f"Sweep length mismatch: expected {target_len} points but got Phase={phase_vals.size}, Xs={xs_vals.size}",
+                    style="red",
+                )
+                sys.exit(1)
+
+            ph = phase_vals.astype(np.float32, copy=False)
+            xsr = xs_vals.astype(np.float32, copy=False)
+
+            # Only NaN/Inf handling
+            ph = np.nan_to_num(ph, nan=0.0, posinf=0.0, neginf=0.0)
+            xsr = np.nan_to_num(xsr, nan=0.0, posinf=0.0, neginf=0.0)
+
+            features = ph.tolist() + xsr.tolist()
+            console.print("Assembled 2-channel features: Phase(deg), Xs", style="green")
+            console.print(f"Total features extracted: {len(features)} (channels=2, points={target_len})", style="green")
             return features
             
         except Exception as e:
             console.print(f"Error extracting features: {e}", style="red")
-            return None
+            sys.exit(1)
 
     def _is_valid_capture(self, vna_df: pd.DataFrame) -> bool:
         """Heuristic checks to avoid degenerate captures causing OOD predictions.
