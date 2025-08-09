@@ -1000,10 +1000,15 @@ class LiveVnaInference:
             diff = prediction - measured_temp
             abs_err = abs(diff)
             within_half = abs_err <= 0.5
+            try:
+                acc_pct = max(0.0, 100.0 * (1.0 - (abs_err / max(1e-6, abs(measured_temp)))))
+            except Exception:
+                acc_pct = 0.0
             extra = (
                 f"\nReference (Arduino): {measured_temp:.2f}°C"
                 f"\nError (pred - ref): {diff:+.2f}°C"
                 f"\nAbs Error: {abs_err:.2f}°C (≤0.5°C: {within_half})"
+                f"\nAccuracy: {acc_pct:.2f}%"
             )
         # Show trained model params if available
         model_desc = "Hold5 CustomResNet"
