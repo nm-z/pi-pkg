@@ -811,24 +811,36 @@ class LiveVnaInference:
                     features.extend(mr.tolist())
                     console.print(f"Added {len(mr)} magnitude sqrt(Rs^2+Xs^2) features (resampled)", style="green")
             elif channels_expected == 2:
-                # Two-channel pipeline for D5: [phase, rs] where rs fallback to Xs if Rs missing
+                # Two-channel pipeline for D5: [phase, rs] where rs fallback to Xs if Rs missing or degenerate
                 # Phase already prepared as 'ph'
-                rs_col = None
-                for col in vna_df.columns:
-                    if col.lower() == 'rs' or 'resistance' in col.lower():
-                        rs_col = col
-                        break
-                if rs_col is None:
-                    # fallback to Xs
-                    for col in vna_df.columns:
-                        if col.lower() == 'xs' or 'reactance' in col.lower():
-                            rs_col = col
-                            break
-                if ph is None or rs_col is None:
+                rs_vals_raw = None
+                rs_col = next((c for c in vna_df.columns if c.lower() == 'rs' or 'resistance' in c.lower()), None)
+                if rs_col is not None:
+                    try:
+                        rs_vals_raw = pd.to_numeric(vna_df[rs_col], errors='coerce').to_numpy()
+                    except Exception:
+                        rs_vals_raw = None
+                # Fallback to Xs if Rs missing or constant/invalid
+                use_xs = False
+                if rs_vals_raw is None or not np.isfinite(rs_vals_raw).any():
+                    use_xs = True
+                else:
+                    try:
+                        rs_std = float(np.nanstd(rs_vals_raw))
+                        if rs_std < 1e-6:
+                            use_xs = True
+                    except Exception:
+                        use_xs = True
+                if use_xs:
+                    xs_col = next((c for c in vna_df.columns if c.lower() == 'xs' or 'reactance' in c.lower()), None)
+                    if xs_col is None:
+                        console.print("Missing valid Rs and Xs for 2-channel D5 pipeline", style="red")
+                        return None
+                    rs_vals_raw = pd.to_numeric(vna_df[xs_col], errors='coerce').to_numpy()
+                if ph is None or rs_vals_raw is None:
                     console.print("Missing Phase or Rs/Xs for 2-channel D5 pipeline", style="red")
                     return None
-                rs_vals = vna_df[rs_col].values
-                rsr = resample_to_length(rs_vals, target_len)
+                rsr = resample_to_length(rs_vals_raw, target_len)
                 # Order: [phase, rs]
                 features.extend(ph.tolist())
                 features.extend(rsr.tolist())
