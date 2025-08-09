@@ -607,9 +607,25 @@ class LiveVnaInference:
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
-        ports = sorted(glob.glob('/dev/ttyACM*'))
+        acm_ports = glob.glob('/dev/ttyACM*')
+        usb_ports = [p for p in glob.glob('/dev/ttyUSB*') if not p.endswith('ttyUSB0')]
+        ports = sorted(acm_ports + usb_ports)
         if not ports:
-            return None
+            # One-shot query of by-id links to catch dynamically appearing devices
+            by_id = '/dev/serial/by-id'
+            if os.path.isdir(by_id):
+                for entry in os.listdir(by_id):
+                    lower = entry.lower()
+                    if 'arduino' in lower or 'acm' in lower:
+                        try:
+                            resolved = os.path.realpath(os.path.join(by_id, entry))
+                            if os.path.exists(resolved):
+                                ports = [resolved]
+                                break
+                        except Exception:
+                            continue
+            if not ports:
+                return None
         sel_baud = baud or self.arduino_baud
         last_val = None
         for dev in ports:
