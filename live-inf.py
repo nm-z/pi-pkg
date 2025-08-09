@@ -875,6 +875,51 @@ class LiveVnaInference:
             console.print(f"Error extracting features: {e}", style="red")
             return None
 
+    def _is_valid_capture(self, vna_df: pd.DataFrame) -> bool:
+        """Heuristic checks to avoid degenerate captures causing OOD predictions.
+        - SWR non-finite or '?' across majority of rows -> invalid
+        - Theta ~ 90 degrees across majority of rows -> likely open circuit
+        - Rs present but near-constant/zero variance across rows -> fallback to Xs or invalid
+        Returns True when capture is considered usable.
+        """
+        try:
+            n = len(vna_df)
+            if n <= 0:
+                return False
+            # SWR validity
+            if 'SWR' in vna_df.columns:
+                swr = pd.to_numeric(vna_df['SWR'], errors='coerce')
+                bad_ratio = float(swr.isna().mean())
+                if bad_ratio > 0.5:
+                    return False
+            # Theta near 90 degrees check
+            th_col = next((c for c in vna_df.columns if c.lower().strip() == 'theta'), None)
+            if th_col is not None:
+                th = pd.to_numeric(vna_df[th_col], errors='coerce')
+                mask = th.notna()
+                if mask.any():
+                    near_90 = np.isclose(th[mask].to_numpy(dtype=float), 90.0, atol=1.0).mean()
+                    if float(near_90) > 0.7:
+                        return False
+            # Rs variance check (if present)
+            rs_col = next((c for c in vna_df.columns if c.lower() == 'rs' or 'resistance' in c.lower()), None)
+            if rs_col is not None:
+                rs = pd.to_numeric(vna_df[rs_col], errors='coerce')
+                rs_var = float(np.nanstd(rs.to_numpy(dtype=float)))
+                if rs_var < 1e-6:
+                    # try Xs variance instead
+                    xs_col = next((c for c in vna_df.columns if c.lower() == 'xs' or 'reactance' in c.lower()), None)
+                    if xs_col is not None:
+                        xs = pd.to_numeric(vna_df[xs_col], errors='coerce')
+                        xs_var = float(np.nanstd(xs.to_numpy(dtype=float)))
+                        if xs_var < 1e-6:
+                            return False
+                    else:
+                        return False
+            return True
+        except Exception:
+            return True
+
     def process_vna_file(self, file_path):
         """Process a VNA CSV file and run inference."""
         try:
@@ -902,6 +947,11 @@ class LiveVnaInference:
             console.print(vna_df.head())
             
             console.print(f"Loaded VNA data: {vna_df.shape}", style="green")
+            
+            # Validate capture to skip degenerate frames (open/short-like)
+            if not self._is_valid_capture(vna_df):
+                console.print("Capture considered degenerate (open/short-like or invalid); skipping prediction", style="yellow")
+                return
             
             # Extract features
             features = self.extract_vna_features(vna_df)
