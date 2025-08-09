@@ -1,0 +1,16 @@
+{
+  "hidden_dim": 448,
+  "num_blocks": 6,
+  "dropout": 0.005489357010878085,
+  "lr": 2.599480445423048e-05,
+  "batch_size": 64,
+  "residual_init": 1.6664912467377955,
+  "use_variance_threshold": false,
+  "use_standard_scaler": true,
+  "use_select_kbest": true,
+  "kbest_k": 17716,
+  "feature_columns": [
+    "Phase(deg)",
+    "Rs"
+  ]
+}
