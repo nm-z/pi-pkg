@@ -14,6 +14,7 @@ import threading
 import subprocess
 import os
 import sys
+import glob
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -596,78 +597,63 @@ class LiveVnaInference:
             return prediction
 
     def read_arduino_temp(self, port: str | None = None, baud: int | None = None, timeout: float = 2.0):
-        """Read one temperature value from Arduino.
-        - Auto-detect port if not present
-        - Parse using regex and plain float fallback
-        - Returns None if no valid reading in timeout
+        """Read one temperature value from Arduino using temp.py behavior.
+        - Scan /dev/ttyACM*
+        - 4s settle, CRLF writes, read 3 lines, return last parsed float.
+        - No background read interference.
         """
         if not self.read_arduino:
             return None
         if serial is None:
             console.print("pyserial not installed; skipping Arduino read", style="yellow")
             return None
-        sel_port = port or self.arduino_port
-        if not os.path.exists(sel_port):
-            detected = self.detect_arduino_port()
-            if detected:
-                sel_port = detected
-                self.arduino_port = detected
+        ports = sorted(glob.glob('/dev/ttyACM*'))
+        if not ports:
+            return None
         sel_baud = baud or self.arduino_baud
-        ser = None
-        try:
-            ser = serial.Serial(sel_port, sel_baud, timeout=1, write_timeout=1)  # type: ignore
+        last_val = None
+        for dev in ports:
+            ser = None
             try:
-                ser.setDTR(False)
-            except Exception:
-                pass
-            try:
-                ser.reset_input_buffer()
-                ser.reset_output_buffer()
-            except Exception:
-                pass
-            # Try request/response, then read until timeout
-            try:
-                ser.write(b"TEMP\r\n")
-            except Exception:
-                pass
-            deadline = time.time() + float(timeout)
-            last_val = None
-            while time.time() < deadline:
-                raw = ser.read_until(b"\n")
-                if not raw:
-                    continue
-                line = raw.decode('utf-8', 'ignore').strip()
-                if not line:
-                    continue
-                m = self.temp_regex.search(line)
-                if m:
-                    try:
-                        last_val = float(m.group(1))
-                        break
-                    except Exception:
-                        continue
-                else:
-                    try:
-                        last_val = float(line)
-                        break
-                    except Exception:
-                        continue
-            if last_val is not None and -40.0 <= last_val <= 200.0:
-                self.latest_arduino_temp = float(last_val)
-                return float(last_val)
-            return None
-        except serial.SerialException as e:  # type: ignore
-            console.print(f"[red]Arduino read error: {e}[/red]")
-            return None
-        except Exception as e:
-            console.print(f"[red]Arduino read error: {e}[/red]")
-            return None
-        finally:
-            if ser is not None:
+                ser = serial.Serial(
+                    dev,
+                    sel_baud,
+                    timeout=1,
+                    dsrdtr=False,
+                    rtscts=False,
+                    write_timeout=1,
+                )  # type: ignore
+                time.sleep(4.0)
                 try:
-                    ser.close()  # type: ignore
+                    ser.reset_input_buffer()
                 except Exception:
                     pass
+                for _ in range(3):
+                    ser.write(b'TEMP\r\n')
+                    ser.flush()
+                    line = ser.read_until(b'\n').decode('utf-8', 'ignore').strip()
+                    try:
+                        last_val = float(line)
+                    except Exception:
+                        m = self.temp_regex.search(line)
+                        if m:
+                            try:
+                                last_val = float(m.group(1))
+                            except Exception:
+                                continue
+                    time.sleep(0.3)
+                if last_val is not None and -40.0 <= last_val <= 200.0:
+                    self.latest_arduino_temp = float(last_val)
+                    return float(last_val)
+            except serial.SerialException:
+                continue
+            finally:
+                try:
+                    if ser is not None:
+                        ser.close()
+                except Exception:
+                    pass
+        return None
 
     def start_arduino_reader(self):
         if serial is None:
@@ -1035,9 +1021,7 @@ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}
         # Load model components
         self.load_model_components()
         
-        # Start Arduino background reader early if enabled
-        if self.read_arduino:
-            self.start_arduino_reader()
+        # Do not start background Arduino reader; reads are one-shot on demand
         
         # Start VNAhl capture
         if not self.start_vna_capture():
