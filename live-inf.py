@@ -398,7 +398,7 @@ class LiveVnaInference:
                 "-Dpurejavacomm.log=false",
                 "-Dpurejavacomm.debug=false",
                 "-Dfstart=45000000",
-                    "-Dfstop=55000000",  # Reduced range
+                    "-Dfstop=60000000",  # Updated range per D5 spec
                     f"-Dfsteps={self.hw_points}",
                 "-DdriverId=20",
                 "-Dcalfile=NATES-miniVNA_Tiny.cal",
